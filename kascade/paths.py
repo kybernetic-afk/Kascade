@@ -28,26 +28,10 @@ def config_path() -> str:
     return os.path.join(config_dir(), "config.json")
 
 
-def _is_writable(path: str) -> bool:
-    try:
-        os.makedirs(path, exist_ok=True)
-        probe = os.path.join(path, ".write_test")
-        with open(probe, "w"):
-            pass
-        os.remove(probe)
-        return True
-    except OSError:
-        return False
-
-
 def data_root() -> str:
-    """Where the app keeps its working folders.
+    """Where the app keeps its working folders (ServerPacks, post_update, bin).
 
-    Prefers the app's own directory (next to the exe) so content is easy to find,
-    but falls back to %APPDATA%\\Kascade when that location isn't writable
-    (e.g. the exe was placed in Program Files).
+    Always under %APPDATA%\\Kascade so the app never litters the folder the exe
+    happens to be run from (e.g. Downloads).
     """
-    here = app_dir()
-    if _is_writable(here):
-        return here
     return config_dir()
