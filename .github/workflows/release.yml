@@ -26,8 +26,18 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt pyinstaller
 
+      - name: Generate version info
+        env:
+          KASCADE_VERSION: ${{ github.ref_name }}
+        run: python scripts/make_version_file.py
+
       - name: Build executable
-        run: pyinstaller --noconfirm --onefile --windowed --name Kascade run_app.py
+        run: >
+          pyinstaller --noconfirm --onefile --windowed --name Kascade
+          --icon assets/icon.ico
+          --add-data "assets/icon.ico;assets"
+          --version-file version_info.txt
+          run_app.py
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4

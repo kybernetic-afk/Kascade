@@ -9,6 +9,14 @@ def app_dir() -> str:
     return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
+def resource_path(rel: str) -> str:
+    """Path to a bundled resource: PyInstaller's temp dir when frozen, else the repo root."""
+    base = getattr(sys, "_MEIPASS", None)
+    if base:
+        return os.path.join(base, rel)
+    return os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), rel)
+
+
 def config_dir() -> str:
     base = os.environ.get("APPDATA") or os.path.expanduser("~")
     path = os.path.join(base, "Kascade")

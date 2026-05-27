@@ -7,7 +7,7 @@ import re
 import shutil
 
 from PySide6.QtCore import QObject, QThread, Signal, Qt
-from PySide6.QtGui import QFont, QTextCursor, QImage, QPixmap
+from PySide6.QtGui import QFont, QTextCursor, QImage, QPixmap, QIcon
 from PySide6.QtWidgets import (
     QApplication,
     QButtonGroup,
@@ -34,8 +34,10 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from . import __version__
 from .config import Config
 from .core import Updater, CancelledError, UpdateError, PHASES
+from .paths import resource_path
 from .curseforge import find_latest_server_pack, download_file, CurseForgeError
 from .secrets_bws import (
     resolve_secrets,
@@ -1299,7 +1301,7 @@ class MainWindow(QWidget):
             self.nav_group.addButton(btn, index)
             side.addWidget(btn)
         side.addStretch(1)
-        footer = QLabel("Bitwarden secrets")
+        footer = QLabel(f"Kascade v{__version__}")
         footer.setObjectName("SidebarFooter")
         side.addWidget(footer)
         root.addWidget(sidebar)
@@ -1328,6 +1330,9 @@ class MainWindow(QWidget):
 def main():
     app = QApplication(sys.argv)
     apply_theme(app)
+    icon_path = resource_path(os.path.join("assets", "icon.ico"))
+    if os.path.exists(icon_path):
+        app.setWindowIcon(QIcon(icon_path))
     window = MainWindow()
     window.show()
     sys.exit(app.exec())
