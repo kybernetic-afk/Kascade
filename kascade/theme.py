@@ -12,7 +12,7 @@ from PySide6.QtGui import (
 )
 
 # ---------------------------------------------------------------------------
-# Kybernetic brand palette (sourced from the logo)
+# Kascade brand palette (sourced from the logo)
 # ---------------------------------------------------------------------------
 BRAND_DEEP = "#042A37"   # logo background - deep teal
 BRAND_GREEN = "#42E695"  # gradient start

@@ -33,7 +33,18 @@ python run_app.py
 build_app.bat
 ```
 
-This produces `dist\Kascade.exe` via PyInstaller.
+This produces:
+
+- `dist\Kascade.exe` — a portable single-file executable (PyInstaller).
+- `dist\Kascade-Setup.exe` — a per-user installer (no admin required) that adds
+  Start Menu / Desktop shortcuts and an uninstaller.
+
+The installer step uses [Inno Setup](https://jrsoftware.org/isdl.php) (install
+it, e.g. `winget install JRSoftware.InnoSetup`). If it isn't found, the build
+still produces the portable `.exe` and just skips the installer.
+
+Tagged releases are also built automatically by GitHub Actions, which publishes
+both the portable `.exe` and the installer.
 
 ## Configuration
 
@@ -43,7 +54,24 @@ All settings live in the app (saved to `%APPDATA%\Kascade\config.json`):
 - **Content** — manage override mods, config files, and the server icon.
 - **Settings** — folders, target files, timing, retries, and the CurseForge project ID.
 
+## Security
+
+Kascade handles SFTP credentials and an AMP token, so it takes some care with them:
+
+- **Secrets encrypted at rest** — secret values you enter directly, and a
+  remembered Bitwarden access token, are encrypted with the Windows Data
+  Protection API (DPAPI). They can only be decrypted by the same Windows user on
+  the same machine, and a copied `config.json` won't reveal them.
+- **SFTP host-key verification** — the server's host key is recorded on first
+  connection (trust-on-first-use, in `%APPDATA%\Kascade\known_hosts`). If a known
+  server later presents a different key, the update aborts before any
+  credentials are sent — protecting against man-in-the-middle interception.
+- **Webhook over HTTPS** — the AMP token is only sent over `https://` (plain
+  `http://` is allowed only for a local/LAN AMP instance), so the token isn't
+  exposed in cleartext on the network.
+- **Verified CLI download** — the `bws` CLI is downloaded from its official
+  GitHub release and verified against a pinned SHA-256 before it's run.
+
 ## Notes
 
-- Plaintext secret values are stored in the local config file. Use Bitwarden mode if you'd rather not keep them in plain text.
 - Bitwarden mode uses the `bws` CLI (Secrets Manager) — not the password vault — and needs a machine-account access token (`BWS_ACCESS_TOKEN`), which the app prompts for and can remember.

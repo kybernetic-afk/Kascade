@@ -10,8 +10,8 @@ import os
 from PIL import Image, ImageDraw, ImageFont
 
 SIZE = 256
-TOP = (66, 230, 149)     # Kybernetic green #42E695
-BOTTOM = (59, 178, 184)  # Kybernetic teal  #3BB2B8
+TOP = (66, 230, 149)     # brand green #42E695
+BOTTOM = (59, 178, 184)  # brand teal  #3BB2B8
 OUT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "assets", "icon.ico")
 
 
@@ -52,7 +52,7 @@ def build():
     tw, th = box[2] - box[0], box[3] - box[1]
     x = (SIZE - tw) / 2 - box[0]
     y = (SIZE - th) / 2 - box[1]
-    draw.text((x, y), text, font=font, fill=(4, 42, 55, 255))  # Kybernetic deep teal
+    draw.text((x, y), text, font=font, fill=(4, 42, 55, 255))  # brand deep teal
 
     os.makedirs(os.path.dirname(OUT), exist_ok=True)
     base.save(OUT, format="ICO", sizes=[(16, 16), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)])
