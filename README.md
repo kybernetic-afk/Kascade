@@ -13,6 +13,14 @@ Defaults target [All the Mods 10](https://www.curseforge.com/minecraft/modpacks/
 - **Live progress** — a modal activity view with per-phase status and an optional detailed log.
 - **Self-contained** — creates its own working folders under `%APPDATA%\Kascade` and downloads the `bws` CLI on first use if needed.
 
+## Screenshots
+
+| Run | Secrets |
+|:---:|:---:|
+| ![Run page](docs/screenshots/run.png) | ![Secrets page](docs/screenshots/secrets.png) |
+| **Content** | **Settings** |
+| ![Content page](docs/screenshots/content.png) | ![Settings page](docs/screenshots/settings.png) |
+
 ## Requirements
 
 - Windows
