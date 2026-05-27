@@ -21,6 +21,12 @@ Defaults target [All the Mods 10](https://www.curseforge.com/minecraft/modpacks/
 | **Content** | **Settings** |
 | ![Content page](docs/screenshots/content.png) | ![Settings page](docs/screenshots/settings.png) |
 
+**Live update progress**
+
+<p align="center">
+  <img src="docs/screenshots/activity.png" alt="Update activity dialog" width="480">
+</p>
+
 ## Requirements
 
 - Windows
