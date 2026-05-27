@@ -1,3 +1,4 @@
+import hashlib
 import io
 import json
 import os
@@ -9,13 +10,14 @@ import zipfile
 
 import requests
 
+from . import crypto
 from .paths import app_dir, data_root
 
 # The values the update needs. Each: (key, label, required, sensitive)
 # `key` is what core.py looks up; the user can map it to any Bitwarden secret name.
 SECRET_ROLES = [
     ("AMP_SFTP_HOST", "SFTP host", True, False),
-    ("AMP_SFTP_PORT", "SFTP port", False, False),
+    ("AMP_SFTP_PORT", "SFTP port", True, False),
     ("AMP_SFTP_USER", "SFTP username", True, False),
     ("AMP_SFTP_PASS", "SFTP password", True, True),
     ("AMP_TOKEN", "AMP API token", True, True),
@@ -25,6 +27,14 @@ SECRET_ROLES = [
 _NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0
 
 BWS_VERSION = "2.1.0"
+
+# SHA-256 of the official bws release zips (from the GitHub release asset
+# digests). The downloaded archive is verified against these before bws.exe is
+# extracted and run, so a tampered download can't execute as the secret handler.
+BWS_SHA256 = {
+    "x86_64": "8d6f2b51beb6f992b5b1de8b85a98bdf18de74096b724d17fa06219fc23f2bd5",
+    "aarch64": "ba18adeb5d123481211c47c4e4d0ad6d81a6b0139150704785542fdee542e583",
+}
 
 
 class SecretError(Exception):
@@ -49,12 +59,31 @@ def _read_persisted_token():
         return None
 
 
+def _token_file() -> str:
+    return os.path.join(data_root(), "token.dat")
+
+
 def token_present() -> bool:
     if os.environ.get("BWS_ACCESS_TOKEN"):
         return True
+    # Current mechanism: a DPAPI-encrypted token file readable only by this user.
+    tf = _token_file()
+    if os.path.isfile(tf):
+        try:
+            with open(tf, "r", encoding="utf-8") as f:
+                token = crypto.unprotect(f.read().strip())
+            if token:
+                os.environ["BWS_ACCESS_TOKEN"] = token
+                return True
+        except Exception:
+            pass
+    # Legacy: older versions saved the token to the user environment in cleartext.
+    # Honour it, but migrate it into the encrypted file so new launches stop
+    # depending on the plaintext registry copy.
     persisted = _read_persisted_token()
     if persisted:
         os.environ["BWS_ACCESS_TOKEN"] = persisted
+        persist_token(persisted)
         return True
     return False
 
@@ -64,17 +93,22 @@ def set_token_for_session(token: str):
 
 
 def persist_token(token: str) -> bool:
-    """Store the token in the user's environment (HKCU) so future launches inherit it."""
+    """Store the token encrypted at rest (Windows DPAPI, current user) under the
+    app's data folder, so future launches can reuse it without a cleartext copy."""
     try:
-        result = subprocess.run(
-            ["setx", "BWS_ACCESS_TOKEN", token],
-            capture_output=True,
-            text=True,
-            timeout=15,
-            creationflags=_NO_WINDOW,
-        )
-        return result.returncode == 0
-    except (OSError, subprocess.TimeoutExpired):
+        blob = crypto.protect(token)
+    except OSError:
+        return False
+    try:
+        path = _token_file()
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(blob)
+        try:
+            os.chmod(path, 0o600)
+        except OSError:
+            pass
+        return True
+    except OSError:
         return False
 
 
@@ -115,6 +149,15 @@ def download_bws(log=print) -> str:
         resp.raise_for_status()
     except requests.RequestException as e:
         raise SecretError(f"Failed to download bws: {e}")
+
+    expected = BWS_SHA256.get(arch)
+    digest = hashlib.sha256(resp.content).hexdigest()
+    if expected and digest != expected:
+        raise SecretError(
+            f"The downloaded Bitwarden CLI failed its integrity check and was not "
+            f"installed (expected {expected[:12]}..., got {digest[:12]}...). This could "
+            "indicate a corrupted or tampered download."
+        )
 
     dest_dir = _bws_install_dir()
     os.makedirs(dest_dir, exist_ok=True)

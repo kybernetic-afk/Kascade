@@ -39,14 +39,30 @@ jobs:
           --version-file version_info.txt
           run_app.py
 
-      - name: Upload build artifact
+      - name: Install Inno Setup
+        run: choco install innosetup -y --no-progress
+
+      - name: Build installer
+        shell: pwsh
+        run: |
+          $v = "${{ github.ref_name }}" -replace '^[vV]', ''
+          if ($v -notmatch '^\d+\.\d+\.\d+') {
+            $v = (python -c "import kascade; print(kascade.__version__)").Trim()
+          }
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /DAppVersion=$v installer.iss
+
+      - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
           name: Kascade
-          path: dist/Kascade.exe
+          path: |
+            dist/Kascade.exe
+            dist/Kascade-Setup.exe
 
       - name: Publish release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/Kascade.exe
+          files: |
+            dist/Kascade.exe
+            dist/Kascade-Setup.exe

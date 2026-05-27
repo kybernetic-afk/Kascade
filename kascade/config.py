@@ -2,7 +2,44 @@ import json
 import os
 from dataclasses import dataclass, field, asdict
 
+from . import crypto
 from .paths import app_dir, data_root, config_path
+
+# Marks a secret value that is DPAPI-encrypted on disk. Values without it are
+# treated as legacy cleartext and re-encrypted on the next save.
+_ENC_PREFIX = "dpapi:"
+
+
+def _encrypt_secrets(secrets: dict) -> dict:
+    """Return a copy of `secrets` with plaintext-mode values encrypted at rest."""
+    out = {}
+    for key, src in (secrets or {}).items():
+        src = dict(src or {})
+        value = src.get("value", "")
+        if src.get("mode") == "plaintext" and value and not value.startswith(_ENC_PREFIX):
+            try:
+                src["value"] = _ENC_PREFIX + crypto.protect(value)
+            except OSError:
+                pass  # DPAPI unavailable (non-Windows dev) - leave as-is
+        out[key] = src
+    return out
+
+
+def _decrypt_secrets(secrets: dict) -> dict:
+    """Return a copy of `secrets` with any encrypted values decrypted in memory."""
+    out = {}
+    for key, src in (secrets or {}).items():
+        src = dict(src or {})
+        value = src.get("value", "")
+        if isinstance(value, str) and value.startswith(_ENC_PREFIX):
+            try:
+                src["value"] = crypto.unprotect(value[len(_ENC_PREFIX):])
+            except Exception:
+                # Wrong user/machine, or corrupted - drop it rather than expose a
+                # stale/unusable blob in the UI.
+                src["value"] = ""
+        out[key] = src
+    return out
 
 
 def default_base_dir() -> str:
@@ -115,7 +152,9 @@ class Config:
         except (json.JSONDecodeError, OSError):
             return cls()
         known = {f.name for f in cls.__dataclass_fields__.values()}
-        return cls(**{k: v for k, v in data.items() if k in known})
+        cfg = cls(**{k: v for k, v in data.items() if k in known})
+        cfg.secrets = _decrypt_secrets(cfg.secrets)
+        return cfg
 
     def save(self):
         data = asdict(self)
@@ -125,5 +164,8 @@ class Config:
             data["base_dir"] = ""
         if self.post_update_dir == default_post_update_dir():
             data["post_update_dir"] = ""
+        # Encrypt plaintext secret values at rest (self.secrets stays cleartext
+        # in memory for the UI / updater).
+        data["secrets"] = _encrypt_secrets(self.secrets)
         with open(config_path(), "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)
