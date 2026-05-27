@@ -2,7 +2,15 @@ import json
 import os
 from dataclasses import dataclass, field, asdict
 
-from .paths import data_root, config_path
+from .paths import app_dir, data_root, config_path
+
+
+def default_base_dir() -> str:
+    return os.path.join(data_root(), "ServerPacks")
+
+
+def default_post_update_dir() -> str:
+    return os.path.join(data_root(), "post_update")
 
 
 def _default_targets():
@@ -70,11 +78,14 @@ class Config:
     secrets: dict = field(default_factory=_default_secrets)
 
     def __post_init__(self):
-        root = data_root()
-        if not self.base_dir:
-            self.base_dir = os.path.join(root, "ServerPacks")
-        if not self.post_update_dir:
-            self.post_update_dir = os.path.join(root, "post_update")
+        # Resolve to the computed default when unset, or migrate the old
+        # exe-relative location to the new default so existing installs heal.
+        legacy_base = os.path.join(app_dir(), "ServerPacks")
+        legacy_post = os.path.join(app_dir(), "post_update")
+        if not self.base_dir or self.base_dir == legacy_base:
+            self.base_dir = default_base_dir()
+        if not self.post_update_dir or self.post_update_dir == legacy_post:
+            self.post_update_dir = default_post_update_dir()
 
     def content_subfolders(self):
         return list(self.post_update_folders) + ["server-files"]
@@ -107,5 +118,12 @@ class Config:
         return cls(**{k: v for k, v in data.items() if k in known})
 
     def save(self):
+        data = asdict(self)
+        # Don't pin the folder paths unless they were actually customized, so
+        # the computed default (under %APPDATA%) keeps applying.
+        if self.base_dir == default_base_dir():
+            data["base_dir"] = ""
+        if self.post_update_dir == default_post_update_dir():
+            data["post_update_dir"] = ""
         with open(config_path(), "w", encoding="utf-8") as f:
-            json.dump(asdict(self), f, indent=2)
+            json.dump(data, f, indent=2)
