@@ -105,18 +105,14 @@ QPushButton#NavButton:checked {{
 }}
 
 QPushButton#PrimaryButton {{
-    background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-        stop:0 {GRADIENT_START}, stop:1 {GRADIENT_END});
+    background-color: {GRADIENT_START};
     color: {ON_ACCENT};
-    border: none;
+    border: 1px solid {GRADIENT_START};
     border-radius: 9px;
-    padding: 10px 20px;
+    padding: 9px 16px;
     font-weight: 700;
 }}
-QPushButton#PrimaryButton:hover {{
-    background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-        stop:0 #5CEBA6, stop:1 {ACCENT_HOVER});
-}}
+QPushButton#PrimaryButton:hover {{ background-color: #5CEBA6; border: 1px solid #5CEBA6; }}
 QPushButton#PrimaryButton:disabled {{ background-color: #1C4350; color: #5A7A80; }}
 
 #Hero {{
@@ -141,7 +137,7 @@ QPushButton#DangerButton {{
     color: #FF8095;
     border: 1px solid #5E2740;
     border-radius: 9px;
-    padding: 10px 18px;
+    padding: 9px 16px;
     font-weight: 600;
 }}
 QPushButton#DangerButton:hover {{ background-color: #4A1E2C; }}
@@ -177,8 +173,7 @@ QProgressBar {{
     color: {TEXT};
 }}
 QProgressBar::chunk {{
-    background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-        stop:0 {GRADIENT_START}, stop:1 {GRADIENT_END});
+    background-color: {ACCENT};
     border-radius: 7px;
 }}
 

@@ -6,7 +6,7 @@ import html
 import re
 import shutil
 
-from PySide6.QtCore import QObject, QThread, Signal, Qt
+from PySide6.QtCore import QObject, QThread, Signal, Qt, QEvent
 from PySide6.QtGui import QFont, QTextCursor, QImage, QPixmap, QIcon
 from PySide6.QtWidgets import (
     QApplication,
@@ -59,6 +59,43 @@ from .theme import (
     HEADING,
     BRAND_MINT,
 )
+
+
+class _WheelGuard(QObject):
+    """Redirect wheel events on inner widgets to the page scroll area, unless the
+    widget is focused. Stops hovering a field from hijacking page scrolling."""
+
+    def __init__(self, scroll):
+        super().__init__(scroll)
+        self._scroll = scroll
+
+    def eventFilter(self, obj, event):
+        if event.type() == QEvent.Wheel and not obj.hasFocus():
+            sb = self._scroll.verticalScrollBar()
+            sb.setValue(sb.value() - event.angleDelta().y())
+            return True
+        return False
+
+
+def _configure_scroll(scroll):
+    """Make a QScrollArea behave: no horizontal bar, wrapped labels, and
+    wheel-over-fields scrolls the page instead of the field."""
+    from PySide6.QtWidgets import QSpinBox, QListWidget
+    scroll.setWidgetResizable(True)
+    scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+    # Scope the transparent background to the viewport itself. A bare
+    # "background: transparent" set inline on the viewport cascades to every
+    # descendant (and inline rules outrank the app stylesheet), which wipes out
+    # button fills - fatal for borderless PrimaryButtons. An objectName-scoped
+    # rule keeps the viewport transparent without leaking onto children.
+    scroll.viewport().setObjectName("ScrollViewport")
+    scroll.setStyleSheet("#ScrollViewport { background: transparent; }")
+    for label in scroll.findChildren(QLabel):
+        label.setWordWrap(True)
+    guard = _WheelGuard(scroll)
+    for widget_type in (QSpinBox, QPlainTextEdit, QListWidget):
+        for widget in scroll.findChildren(widget_type):
+            widget.installEventFilter(guard)
 
 
 def _linkify(text):
@@ -784,7 +821,6 @@ class SettingsPage(QWidget):
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
-        scroll.viewport().setStyleSheet("background: transparent;")
         container = QWidget()
         layout = QVBoxLayout(container)
         layout.setContentsMargins(0, 0, 6, 0)
@@ -870,6 +906,7 @@ class SettingsPage(QWidget):
 
         layout.addStretch(1)
         scroll.setWidget(container)
+        _configure_scroll(scroll)
         outer.addWidget(scroll, 1)
 
         save_row = QHBoxLayout()
@@ -1011,7 +1048,6 @@ class ContentPage(QWidget):
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
-        scroll.viewport().setStyleSheet("background: transparent;")
         container = QWidget()
         layout = QVBoxLayout(container)
         layout.setContentsMargins(0, 0, 6, 0)
@@ -1060,14 +1096,21 @@ class ContentPage(QWidget):
         icon_row.addWidget(self.icon_preview)
         icon_row.addWidget(self.icon_status, 1)
         icon_card.add_layout(icon_row)
-        icon_card.add_layout(self._row([
-            ("Set custom icon...", self.set_icon, True),
-            ("Remove icon", self.remove_icon, False),
-        ]))
+        icon_btns = QHBoxLayout()
+        self.set_icon_btn = QPushButton("Set custom icon...")
+        self.set_icon_btn.setObjectName("PrimaryButton")
+        self.set_icon_btn.clicked.connect(self.set_icon)
+        self.remove_icon_btn = QPushButton("Remove icon")
+        self.remove_icon_btn.clicked.connect(self.remove_icon)
+        icon_btns.addWidget(self.set_icon_btn)
+        icon_btns.addWidget(self.remove_icon_btn)
+        icon_btns.addStretch(1)
+        icon_card.add_layout(icon_btns)
         layout.addWidget(icon_card)
 
         layout.addStretch(1)
         scroll.setWidget(container)
+        _configure_scroll(scroll)
         outer.addWidget(scroll, 1)
 
         self._refresh()
@@ -1235,7 +1278,6 @@ class SecretsPage(QWidget):
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
-        scroll.viewport().setStyleSheet("background: transparent;")
         container = QWidget()
         layout = QVBoxLayout(container)
         layout.setContentsMargins(0, 0, 6, 0)
@@ -1303,6 +1345,7 @@ class SecretsPage(QWidget):
 
         layout.addStretch(1)
         scroll.setWidget(container)
+        _configure_scroll(scroll)
         outer.addWidget(scroll, 1)
 
         self._apply_echo(False)

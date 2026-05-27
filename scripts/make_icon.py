@@ -47,7 +47,7 @@ def build():
 
     draw = ImageDraw.Draw(base)
     font = _font(170)
-    text = "C"
+    text = "K"
     box = draw.textbbox((0, 0), text, font=font)
     tw, th = box[2] - box[0], box[3] - box[1]
     x = (SIZE - tw) / 2 - box[0]

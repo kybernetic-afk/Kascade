@@ -11,7 +11,7 @@ Defaults target [All the Mods 10](https://www.curseforge.com/minecraft/modpacks/
 - **Content management** — add/edit override mods and config files, and set a custom server icon (any image is auto-resized to Minecraft's required 64×64 PNG).
 - **Flexible secrets** — enter values directly, or pull each one from [Bitwarden Secrets Manager](https://bitwarden.com/products/secrets-manager/) by name. The `bws` CLI is downloaded automatically on first use if needed.
 - **Live progress** — a modal activity view with per-phase status and an optional detailed log.
-- **Self-contained** — creates its own working folders next to the executable (or under `%APPDATA%\Kascade` if that location isn't writable).
+- **Self-contained** — creates its own working folders under `%APPDATA%\Kascade` and downloads the `bws` CLI on first use if needed.
 
 ## Requirements
 
