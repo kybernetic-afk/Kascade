@@ -1,0 +1,49 @@
+# Kascade
+
+A sleek Windows app that keeps a modded Minecraft server in rhythm with the latest pack release. Kascade downloads the newest CurseForge **server pack**, layers your own mods/configs/server icon on top, and deploys everything to your server over SFTP — stopping and restarting it through an AMP webhook.
+
+Defaults target [All the Mods 10](https://www.curseforge.com/minecraft/modpacks/all-the-mods-10), but the CurseForge project is configurable, so it works for other packs too.
+
+## Features
+
+- **One-click update** — stop server, upload the new pack, apply your overrides, restart.
+- **Download Latest** — finds and downloads the newest server pack straight from CurseForge (no API key required), with a confirmation prompt.
+- **Content management** — add/edit override mods and config files, and set a custom server icon (any image is auto-resized to Minecraft's required 64×64 PNG).
+- **Flexible secrets** — enter values directly, or pull each one from [Bitwarden Secrets Manager](https://bitwarden.com/products/secrets-manager/) by name. The `bws` CLI is downloaded automatically on first use if needed.
+- **Live progress** — a modal activity view with per-phase status and an optional detailed log.
+- **Self-contained** — creates its own working folders next to the executable (or under `%APPDATA%\Kascade` if that location isn't writable).
+
+## Requirements
+
+- Windows
+- Python 3.x (for running from source or building)
+- A Minecraft server managed by [AMP](https://cubecoders.com/AMP) with SFTP access and a webhook configured
+  ([webhook setup docs](https://discourse.cubecoders.com/t/webhook-and-stream-deck-integrations/34321))
+
+## Run from source
+
+```
+pip install -r requirements.txt
+python run_app.py
+```
+
+## Build a standalone .exe
+
+```
+build_app.bat
+```
+
+This produces `dist\Kascade.exe` via PyInstaller.
+
+## Configuration
+
+All settings live in the app (saved to `%APPDATA%\Kascade\config.json`):
+
+- **Secrets** — SFTP host/port/username/password, AMP API token, and webhook URL. Each can be plaintext or pulled from Bitwarden Secrets Manager.
+- **Content** — manage override mods, config files, and the server icon.
+- **Settings** — folders, target files, timing, retries, and the CurseForge project ID.
+
+## Notes
+
+- Plaintext secret values are stored in the local config file. Use Bitwarden mode if you'd rather not keep them in plain text.
+- Bitwarden mode uses the `bws` CLI (Secrets Manager) — not the password vault — and needs a machine-account access token (`BWS_ACCESS_TOKEN`), which the app prompts for and can remember.
