@@ -787,7 +787,7 @@ class RunPage(QWidget):
         set_token_for_session(token)
         if dialog.should_remember():
             if persist_token(token):
-                self.append("Token saved to your user environment for next time.")
+                self.append("Token saved (encrypted) for next time.")
             else:
                 self.append("Warning: could not save token persistently; using it for this session only.")
         return True

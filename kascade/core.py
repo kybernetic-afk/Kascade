@@ -1,14 +1,32 @@
+import ipaddress
 import os
 import socket
 import time
 import zipfile
 import shutil
 from stat import S_ISDIR
+from urllib.parse import urlparse
 
 import paramiko
 import requests
 
+from .paths import config_dir
+
 WEBHOOK_DOCS_URL = "https://discourse.cubecoders.com/t/webhook-and-stream-deck-integrations/34321"
+
+
+def _is_local_host(host: str) -> bool:
+    """True for loopback / private / link-local addresses (and 'localhost').
+
+    Used to permit plain http only for AMP instances on the same machine/LAN.
+    """
+    if host.lower() == "localhost":
+        return True
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return ip.is_loopback or ip.is_private or ip.is_link_local
 
 
 class CancelledError(Exception):
@@ -230,10 +248,21 @@ class Updater:
             raise UpdateError(
                 "No AMP webhook URL is set. Add it on the Secrets page.", WEBHOOK_DOCS_URL
             )
-        if not url.lower().startswith(("http://", "https://")):
+        parsed = urlparse(url)
+        scheme = parsed.scheme.lower()
+        if scheme not in ("http", "https"):
             raise UpdateError(
                 f"The AMP webhook URL doesn't look valid: '{url}'. It should start with "
                 "https:// and come from your AMP instance.",
+                WEBHOOK_DOCS_URL,
+            )
+        # The AMP token rides in this request (Bearer header + body). Refuse to
+        # send it over plain http to anything beyond the local machine/LAN.
+        if scheme == "http" and not _is_local_host(parsed.hostname or ""):
+            raise UpdateError(
+                f"The AMP webhook URL uses http://, which would send your AMP token in "
+                f"cleartext to {parsed.hostname}. Use an https:// URL (plain http is only "
+                "allowed for a local or LAN AMP instance).",
                 WEBHOOK_DOCS_URL,
             )
 
@@ -336,9 +365,33 @@ class Updater:
                 f"The SFTP port isn't a number: '{self.s.get('AMP_SFTP_PORT')}'. "
                 "Fix it on the Secrets page."
             )
+        # Verify the server's host key (trust-on-first-use). The first connection
+        # records the key; if a known host later presents a different key we abort
+        # rather than hand credentials to a possible man-in-the-middle.
+        known_hosts = os.path.join(config_dir(), "known_hosts")
+        if not os.path.exists(known_hosts):
+            open(known_hosts, "a").close()
+        client = paramiko.SSHClient()
+        client.load_host_keys(known_hosts)
+        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
         try:
-            transport = paramiko.Transport((host, port))
-            transport.connect(username=self.s["AMP_SFTP_USER"], password=self.s["AMP_SFTP_PASS"])
+            client.connect(
+                hostname=host,
+                port=port,
+                username=self.s["AMP_SFTP_USER"],
+                password=self.s["AMP_SFTP_PASS"],
+                look_for_keys=False,
+                allow_agent=False,
+                timeout=30,
+            )
+        except paramiko.BadHostKeyException as e:
+            raise UpdateError(
+                f"The SFTP server's identity has changed since the last connection to "
+                f"{host}:{port}. This can happen if the server was rebuilt - or it can mean "
+                f"the connection is being intercepted. No files were uploaded.\n\n"
+                f"If you trust this change, remove the entry for this host from:\n"
+                f"{known_hosts}\nand try again.\n\nDetails: {e}"
+            )
         except paramiko.AuthenticationException:
             raise UpdateError(
                 "SFTP login was rejected. Check the SFTP username and password on the "
@@ -354,7 +407,7 @@ class Updater:
                 f"SFTP connection error to {host}:{port} ({e}). Check the SFTP host, port, "
                 "and credentials on the Secrets page."
             )
-        sftp = paramiko.SFTPClient.from_transport(transport)
+        sftp = client.open_sftp()
 
         try:
             self._phase("clean_remote")
@@ -401,7 +454,7 @@ class Updater:
                 self.log(f"Warning: post_update directory not found at {cfg.post_update_dir}")
         finally:
             sftp.close()
-            transport.close()
+            client.close()
 
         self._phase("cleanup")
         self.log("Cleaning up local extracted files...")
