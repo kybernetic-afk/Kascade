@@ -15,7 +15,7 @@ from .paths import app_dir, data_root
 # `key` is what core.py looks up; the user can map it to any Bitwarden secret name.
 SECRET_ROLES = [
     ("AMP_SFTP_HOST", "SFTP host", True, False),
-    ("AMP_SFTP_PORT", "SFTP port", False, False),
+    ("AMP_SFTP_PORT", "SFTP port", True, False),
     ("AMP_SFTP_USER", "SFTP username", True, False),
     ("AMP_SFTP_PASS", "SFTP password", True, True),
     ("AMP_TOKEN", "AMP API token", True, True),

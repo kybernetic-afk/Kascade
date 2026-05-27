@@ -6,8 +6,18 @@ import html
 import re
 import shutil
 
-from PySide6.QtCore import QObject, QThread, Signal, Qt, QEvent
-from PySide6.QtGui import QFont, QTextCursor, QImage, QPixmap, QIcon
+from PySide6.QtCore import (
+    QObject,
+    QThread,
+    Signal,
+    Qt,
+    QEvent,
+    QTimer,
+    QSize,
+    QPropertyAnimation,
+    QEasingCurve,
+)
+from PySide6.QtGui import QFont, QFontMetrics, QTextCursor, QImage, QPixmap, QIcon, QColor, QPainter
 from PySide6.QtWidgets import (
     QApplication,
     QButtonGroup,
@@ -17,6 +27,8 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QFormLayout,
     QFrame,
+    QGraphicsDropShadowEffect,
+    QGraphicsOpacityEffect,
     QGridLayout,
     QHBoxLayout,
     QInputDialog,
@@ -28,6 +40,7 @@ from PySide6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QSpinBox,
     QStackedWidget,
     QVBoxLayout,
@@ -50,6 +63,7 @@ from .secrets_bws import (
 )
 from .theme import (
     apply_theme,
+    nav_icon,
     MUTED,
     PENDING,
     RUNNING,
@@ -125,6 +139,16 @@ def _human_size(num):
     return f"{num:.2f} PB"
 
 
+def _add_shadow(widget, blur=24, dy=6, alpha=70):
+    """Soft drop shadow for card elevation."""
+    effect = QGraphicsDropShadowEffect(widget)
+    effect.setBlurRadius(blur)
+    effect.setXOffset(0)
+    effect.setYOffset(dy)
+    effect.setColor(QColor(0, 0, 0, alpha))
+    widget.setGraphicsEffect(effect)
+
+
 class Card(QFrame):
     def __init__(self, title=None):
         super().__init__()
@@ -132,6 +156,7 @@ class Card(QFrame):
         self.box = QVBoxLayout(self)
         self.box.setContentsMargins(18, 16, 18, 18)
         self.box.setSpacing(12)
+        _add_shadow(self)
         if title:
             label = QLabel(title)
             label.setObjectName("CardTitle")
@@ -145,23 +170,127 @@ class Card(QFrame):
 
 
 class StatTile(QFrame):
-    def __init__(self, label):
+    def __init__(self, label, badge=False):
         super().__init__()
         self.setObjectName("Tile")
+        self._badge = badge
+        _add_shadow(self, blur=18, dy=4, alpha=55)
         box = QVBoxLayout(self)
         box.setContentsMargins(16, 14, 16, 14)
-        box.setSpacing(4)
+        box.setSpacing(6)
         self.label = QLabel(label.upper())
         self.label.setObjectName("StatLabel")
         self.value = QLabel("-")
-        self.value.setObjectName("StatValue")
-        box.addWidget(self.label)
-        box.addWidget(self.value)
+        if badge:
+            # A status pill: object name + dynamic 'state' drive the QSS colour.
+            self.value.setObjectName("StatusBadge")
+            self.value.setProperty("state", "idle")
+            row = QHBoxLayout()
+            row.setContentsMargins(0, 0, 0, 0)
+            row.addWidget(self.value, 0, Qt.AlignLeft)
+            row.addStretch(1)
+            box.addWidget(self.label)
+            box.addLayout(row)
+        else:
+            self.value.setObjectName("StatValue")
+            box.addWidget(self.label)
+            box.addWidget(self.value)
         box.addStretch(1)
 
     def set_value(self, text, color=None):
         self.value.setText(text)
-        self.value.setStyleSheet(f"color: {color};" if color else "")
+        if not self._badge:
+            self.value.setStyleSheet(f"color: {color};" if color else "")
+
+    def set_state(self, text, state):
+        """For badge tiles: set text and re-polish the pill for `state`."""
+        self.value.setText(text)
+        self.value.setProperty("state", state)
+        self.value.style().unpolish(self.value)
+        self.value.style().polish(self.value)
+
+
+class PlaceholderListWidget(QListWidget):
+    """A list that paints centered placeholder text when it holds no items."""
+
+    def __init__(self, placeholder):
+        super().__init__()
+        self._placeholder = placeholder
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        if self.count() == 0:
+            painter = QPainter(self.viewport())
+            painter.setPen(QColor(MUTED))
+            painter.drawText(self.viewport().rect(), Qt.AlignCenter | Qt.TextWordWrap,
+                             self._placeholder)
+            painter.end()
+
+
+class Toast(QFrame):
+    """Transient bottom-right notification that fades in, lingers, and fades out."""
+
+    GLYPHS = {"success": "✓", "error": "✕", "info": "•"}
+    COLORS = {"success": SUCCESS, "error": FAILED, "info": RUNNING}
+
+    def __init__(self, parent, text, kind="success", duration=2600):
+        super().__init__(parent)
+        self.setObjectName("Toast")
+        self.setProperty("kind", kind)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+
+        row = QHBoxLayout(self)
+        row.setContentsMargins(14, 11, 16, 11)
+        row.setSpacing(10)
+        glyph = QLabel(self.GLYPHS.get(kind, "•"))
+        glyph.setStyleSheet(
+            f"color: {self.COLORS.get(kind, RUNNING)}; font-size: 15px; font-weight: 800;"
+        )
+        label = QLabel(text)
+        label.setObjectName("ToastText")
+        row.addWidget(glyph)
+        row.addWidget(label)
+
+        self._effect = QGraphicsOpacityEffect(self)
+        self.setGraphicsEffect(self._effect)
+        self._effect.setOpacity(0.0)
+
+        self.adjustSize()
+        self._reposition()
+
+        self._fade_in = QPropertyAnimation(self._effect, b"opacity", self)
+        self._fade_in.setDuration(160)
+        self._fade_in.setStartValue(0.0)
+        self._fade_in.setEndValue(1.0)
+        self._fade_in.setEasingCurve(QEasingCurve.OutCubic)
+
+        self._fade_out = QPropertyAnimation(self._effect, b"opacity", self)
+        self._fade_out.setDuration(260)
+        self._fade_out.setStartValue(1.0)
+        self._fade_out.setEndValue(0.0)
+        self._fade_out.setEasingCurve(QEasingCurve.InCubic)
+        self._fade_out.finished.connect(self.deleteLater)
+
+        self.show()
+        self.raise_()
+        self._fade_in.start()
+        QTimer.singleShot(duration, self._fade_out.start)
+
+    def _reposition(self):
+        parent = self.parentWidget()
+        if not parent:
+            return
+        margin = 22
+        x = parent.width() - self.width() - margin
+        y = parent.height() - self.height() - margin
+        self.move(max(margin, x), max(margin, y))
+
+    @staticmethod
+    def show_message(host, text, kind="success"):
+        """`host` is any widget; the toast is parented to its top-level window."""
+        window = host.window() if host else None
+        if window is not None:
+            Toast(window, text, kind)
 
 
 def _page_header(title, subtitle):
@@ -465,10 +594,6 @@ class ActivityDialog(QDialog):
 
 
 class RunPage(QWidget):
-    STATUS_COLORS = {
-        "idle": MUTED, "running": RUNNING, "success": SUCCESS, "failed": FAILED,
-    }
-
     def __init__(self, config, get_config):
         super().__init__()
         self.config = config
@@ -498,7 +623,7 @@ class RunPage(QWidget):
         left = QVBoxLayout(left_w)
         left.setContentsMargins(0, 0, 0, 0)
         left.setSpacing(4)
-        title = QLabel("Kascade")
+        title = QLabel("Update your server")
         title.setObjectName("HeroTitle")
         title.setWordWrap(True)
         sub = QLabel("Fetch the newest pack and deploy it to your server in one click.")
@@ -525,7 +650,7 @@ class RunPage(QWidget):
         grid = QGridLayout()
         grid.setSpacing(14)
         self.tile_modpack = StatTile("Modpack")
-        self.tile_status = StatTile("Status")
+        self.tile_status = StatTile("Status", badge=True)
         self.tile_pack = StatTile("Local pack")
         self.tile_secrets = StatTile("Secrets source")
         self.tile_mods = StatTile("Extra mods")
@@ -642,7 +767,7 @@ class RunPage(QWidget):
         self.no_pack_hint.setVisible(not self._busy and not self._has_pack)
 
     def _set_status(self, text, state):
-        self.tile_status.set_value(text, self.STATUS_COLORS.get(state))
+        self.tile_status.set_state(text, state)
 
     def append(self, line):
         # Page no longer shows a log panel; live activity lives in the modal dialog.
@@ -970,6 +1095,7 @@ class SettingsPage(QWidget):
             return
         self.config.save()
         self.saved_label.setText("Settings saved.")
+        Toast.show_message(self, "Settings saved", "success")
 
     def _open_folder(self, path):
         try:
@@ -1055,7 +1181,9 @@ class ContentPage(QWidget):
 
         # Mods
         mods_card = Card("Extra / override mods")
-        self.mods_list = QListWidget()
+        self.mods_list = PlaceholderListWidget(
+            "No extra mods yet.\nClick “Add jars…” to layer mods onto every update."
+        )
         self.mods_list.setMaximumHeight(150)
         mods_card.add(self.mods_list)
         mods_card.add_layout(self._row([
@@ -1067,7 +1195,9 @@ class ContentPage(QWidget):
 
         # Config
         config_card = Card("Config overrides")
-        self.config_list = QListWidget()
+        self.config_list = PlaceholderListWidget(
+            "No config overrides yet.\nAdd files or create a new one to override pack configs."
+        )
         self.config_list.setMaximumHeight(150)
         self.config_list.itemDoubleClicked.connect(lambda _i: self.edit_config())
         config_card.add(self.config_list)
@@ -1247,7 +1377,7 @@ class ContentPage(QWidget):
         ok, message = convert_to_server_icon(path, self._icon_path())
         self._refresh()
         if ok:
-            QMessageBox.information(self, "Server icon", message)
+            Toast.show_message(self, "Server icon set", "success")
         else:
             QMessageBox.warning(self, "Server icon", message)
 
@@ -1256,6 +1386,7 @@ class ContentPage(QWidget):
         if os.path.isfile(icon):
             try:
                 os.remove(icon)
+                Toast.show_message(self, "Server icon removed", "info")
             except OSError as e:
                 QMessageBox.warning(self, "Remove failed", str(e))
         self._refresh()
@@ -1293,13 +1424,24 @@ class SecretsPage(QWidget):
         values_card = Card("Values")
         form = QFormLayout()
         form.setSpacing(12)
+        # Fixed name-column width so the Required/Optional chips line up in a
+        # column even though the secret names differ in length.
+        _name_font = QFont("Segoe UI")
+        _name_font.setPixelSize(13)
+        _fm = QFontMetrics(_name_font)
+        name_col_w = max(_fm.horizontalAdvance(lbl) for _, lbl, _, _ in SECRET_ROLES) + 10
         for key, label, required, sensitive in SECRET_ROLES:
             src = (config.secrets or {}).get(key, {})
             checkbox = QCheckBox("From Bitwarden")
             value_edit = QLineEdit(src.get("value", ""))
             value_edit.setPlaceholderText("required" if required else "optional")
-            bws_edit = QLineEdit(src.get("bws_key", "") or key)
-            bws_edit.setPlaceholderText("Bitwarden secret name")
+            # Show the default secret name as an example placeholder rather than
+            # real text - everyone names their secrets differently. Only a name
+            # that genuinely differs from the default is shown as text; left
+            # blank (or matching the default), it falls back to `key` on save.
+            saved_bws = src.get("bws_key", "")
+            bws_edit = QLineEdit("" if (not saved_bws or saved_bws == key) else saved_bws)
+            bws_edit.setPlaceholderText(f"e.g. {key}")
 
             stack = QStackedWidget()
             stack.addWidget(value_edit)  # index 0: plaintext
@@ -1310,13 +1452,26 @@ class SecretsPage(QWidget):
             checkbox.toggled.connect(lambda checked, s=stack: s.setCurrentIndex(1 if checked else 0))
 
             field = QWidget()
-            fb = QVBoxLayout(field)
+            fb = QHBoxLayout(field)
             fb.setContentsMargins(0, 0, 0, 0)
-            fb.setSpacing(6)
-            fb.addWidget(checkbox)
-            fb.addWidget(stack)
-            label_text = label + (" *" if required else "")
-            form.addRow(label_text + ":", field)
+            fb.setSpacing(12)
+            stack.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            fb.addWidget(stack, 1)
+            fb.addWidget(checkbox, 0)
+
+            name_w = QWidget()
+            nb = QHBoxLayout(name_w)
+            nb.setContentsMargins(0, 0, 0, 0)
+            nb.setSpacing(8)
+            name_lbl = QLabel(label)
+            name_lbl.setFixedWidth(name_col_w)
+            chip = QLabel("Required" if required else "Optional")
+            chip.setObjectName("FieldTag")
+            chip.setProperty("req", "true" if required else "false")
+            nb.addWidget(name_lbl)
+            nb.addWidget(chip)
+            nb.addStretch(1)
+            form.addRow(name_w, field)
 
             self.rows[key] = {
                 "checkbox": checkbox,
@@ -1389,6 +1544,7 @@ class SecretsPage(QWidget):
         self.apply_to_config()
         self.config.save()
         self.saved_label.setText("Secrets saved.")
+        Toast.show_message(self, "Secrets saved", "success")
 
 
 class MainWindow(QWidget):
@@ -1418,14 +1574,18 @@ class MainWindow(QWidget):
         self.nav_group = QButtonGroup(self)
         self.nav_group.setExclusive(True)
         for index, name in enumerate(["Run", "Content", "Secrets", "Settings"]):
-            btn = QPushButton(name)
+            btn = QPushButton(f"  {name}")
             btn.setObjectName("NavButton")
             btn.setCheckable(True)
+            icon = nav_icon(name)
+            if not icon.isNull():
+                btn.setIcon(icon)
+                btn.setIconSize(QSize(18, 18))
             btn.clicked.connect(lambda _checked, i=index: self.stack.setCurrentIndex(i))
             self.nav_group.addButton(btn, index)
             side.addWidget(btn)
         side.addStretch(1)
-        footer = QLabel(f"Kascade v{__version__}")
+        footer = QLabel(f"v{__version__}")
         footer.setObjectName("SidebarFooter")
         side.addWidget(footer)
         root.addWidget(sidebar)
