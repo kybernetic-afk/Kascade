@@ -38,7 +38,7 @@ from . import __version__
 from .config import Config
 from .core import Updater, CancelledError, UpdateError, PHASES
 from .paths import resource_path
-from .curseforge import find_latest_server_pack, download_file, CurseForgeError
+from .curseforge import find_latest_server_pack, download_file, get_project_name, CurseForgeError
 from .secrets_bws import (
     resolve_secrets,
     config_needs_bws,
@@ -173,6 +173,22 @@ class Worker(QObject):
         except Exception as e:
             self.log_line.emit(f"ERROR: {e}")
             self.finished.emit(False, str(e))
+
+
+class ProjectNameWorker(QObject):
+    done = Signal(int, str)
+    failed = Signal(int)
+
+    def __init__(self, project_id):
+        super().__init__()
+        self.project_id = project_id
+
+    def run(self):
+        try:
+            name = get_project_name(self.project_id)
+            self.done.emit(self.project_id, name)
+        except Exception:
+            self.failed.emit(self.project_id)
 
 
 class DiscoverWorker(QObject):
@@ -414,6 +430,12 @@ class RunPage(QWidget):
         self.worker = None
         self.dl_thread = None
         self.dl_worker = None
+        self._busy = False
+        self._has_pack = False
+        self._project_names = {}
+        self._name_thread = None
+        self._name_worker = None
+        self._name_fetch_id = None
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(28, 24, 28, 24)
@@ -455,19 +477,27 @@ class RunPage(QWidget):
         # Stat tiles
         grid = QGridLayout()
         grid.setSpacing(14)
+        self.tile_modpack = StatTile("Modpack")
         self.tile_status = StatTile("Status")
         self.tile_pack = StatTile("Local pack")
         self.tile_secrets = StatTile("Secrets source")
         self.tile_mods = StatTile("Extra mods")
         self.tile_config = StatTile("Config overrides")
-        self.tile_icon = StatTile("Server icon")
-        tiles = [self.tile_status, self.tile_pack, self.tile_secrets,
-                 self.tile_mods, self.tile_config, self.tile_icon]
+        tiles = [self.tile_modpack, self.tile_status, self.tile_pack,
+                 self.tile_secrets, self.tile_mods, self.tile_config]
         for i, tile in enumerate(tiles):
             grid.addWidget(tile, i // 3, i % 3)
         for c in range(3):
             grid.setColumnStretch(c, 1)
         layout.addLayout(grid)
+
+        self.no_pack_hint = QLabel(
+            "No pack downloaded yet - click Download Latest to fetch the newest version."
+        )
+        self.no_pack_hint.setObjectName("SubHeader")
+        self.no_pack_hint.setWordWrap(True)
+        self.no_pack_hint.setVisible(False)
+        layout.addWidget(self.no_pack_hint)
 
         self.progress = QProgressBar()
         self.progress.setRange(0, 100)
@@ -485,6 +515,9 @@ class RunPage(QWidget):
 
     def _refresh_tiles(self):
         cfg = self.config
+        # Modpack name (fetched in the background, cached per project id)
+        self._ensure_project_name()
+
         # Local pack
         try:
             packs = [f for f in os.listdir(cfg.base_dir)
@@ -495,8 +528,10 @@ class RunPage(QWidget):
             newest = max(packs, key=lambda f: os.path.getmtime(os.path.join(cfg.base_dir, f)))
             version = newest[len("ServerFiles-"):-len(".zip")]
             self.tile_pack.set_value(version)
+            self._has_pack = True
         else:
             self.tile_pack.set_value("None", "#9a93b8")
+            self._has_pack = False
 
         # Secrets source
         modes = {(s or {}).get("mode", "bws") for s in (cfg.secrets or {}).values()}
@@ -516,11 +551,48 @@ class RunPage(QWidget):
                 return 0
         self.tile_mods.set_value(str(count("mods")))
         self.tile_config.set_value(str(count("config")))
-        icon = os.path.join(cfg.post_update_dir, "server-files", "server-icon.png")
-        if os.path.isfile(icon):
-            self.tile_icon.set_value("Set", "#3ddc97")
-        else:
-            self.tile_icon.set_value("None", "#9a93b8")
+
+        self._update_run_enabled()
+
+    def _ensure_project_name(self):
+        pid = self.config.curseforge_project_id
+        if pid in self._project_names:
+            self.tile_modpack.set_value(self._project_names[pid])
+            return
+        if self._name_fetch_id == pid:
+            return
+        self._name_fetch_id = pid
+        self.tile_modpack.set_value("Loading...", "#9a93b8")
+        self._name_thread = QThread()
+        self._name_worker = ProjectNameWorker(pid)
+        self._name_worker.moveToThread(self._name_thread)
+        self._name_thread.started.connect(self._name_worker.run)
+        self._name_worker.done.connect(self._on_name)
+        self._name_worker.failed.connect(self._on_name_failed)
+        self._name_worker.done.connect(self._name_thread.quit)
+        self._name_worker.failed.connect(self._name_thread.quit)
+        self._name_thread.finished.connect(self._name_thread.deleteLater)
+        self._name_thread.start()
+
+    def _on_name(self, pid, name):
+        self._project_names[pid] = name
+        self._name_fetch_id = None
+        if pid == self.config.curseforge_project_id:
+            self.tile_modpack.set_value(name)
+
+    def _on_name_failed(self, pid):
+        self._name_fetch_id = None
+        if pid == self.config.curseforge_project_id and pid not in self._project_names:
+            self.tile_modpack.set_value(f"#{pid}", "#9a93b8")
+
+    def _update_run_enabled(self):
+        self.cancel_btn.setEnabled(self._busy)
+        self.download_btn.setEnabled(not self._busy)
+        self.run_btn.setEnabled(not self._busy and self._has_pack)
+        self.run_btn.setToolTip(
+            "" if self._has_pack else "Download the latest pack first."
+        )
+        self.no_pack_hint.setVisible(not self._busy and not self._has_pack)
 
     def _set_status(self, text, state):
         self.tile_status.set_value(text, self.STATUS_COLORS.get(state))
@@ -549,9 +621,8 @@ class RunPage(QWidget):
         return True
 
     def _set_busy(self, busy):
-        self.run_btn.setEnabled(not busy)
-        self.download_btn.setEnabled(not busy)
-        self.cancel_btn.setEnabled(busy)
+        self._busy = busy
+        self._update_run_enabled()
 
     def start(self):
         config = self.get_config()

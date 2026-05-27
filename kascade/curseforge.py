@@ -1,4 +1,5 @@
 import os
+import re
 import urllib.parse
 
 import requests
@@ -21,6 +22,32 @@ def _headers():
 
 def cdn_url(file_id: int, file_name: str) -> str:
     return f"{CDN}/{file_id // 1000}/{file_id % 1000}/{urllib.parse.quote(file_name)}"
+
+
+def get_project_name(project_id: int) -> str:
+    """Best-effort project name, derived from the newest file's display name.
+
+    The no-key detail endpoint is forbidden, but file display names look like
+    'All the Mods 10-7.0', so we strip the trailing version.
+    """
+    try:
+        resp = requests.get(
+            f"{BASE}/mods/{project_id}/files",
+            params={"pageIndex": 0, "pageSize": 1, "sort": "dateCreated", "sortDescending": "true"},
+            headers=_headers(),
+            timeout=20,
+        )
+    except requests.RequestException as e:
+        raise CurseForgeError(f"Failed to reach CurseForge: {e}")
+    if resp.status_code != 200:
+        raise CurseForgeError(f"CurseForge returned HTTP {resp.status_code}")
+
+    data = resp.json().get("data") or []
+    if not data:
+        raise CurseForgeError("No files found for that project.")
+    display = data[0].get("displayName") or data[0].get("fileName", "")
+    name = re.sub(r"-\s*\d[\w.+-]*$", "", display).strip()
+    return name or display
 
 
 def find_latest_server_pack(project_id: int, name_contains: str = "ServerFiles", log=print) -> dict:
