@@ -48,7 +48,17 @@ from .secrets_bws import (
     set_token_for_session,
     persist_token,
 )
-from .theme import apply_theme
+from .theme import (
+    apply_theme,
+    MUTED,
+    PENDING,
+    RUNNING,
+    SUCCESS,
+    FAILED,
+    BORDER,
+    HEADING,
+    BRAND_MINT,
+)
 
 
 def _linkify(text):
@@ -284,7 +294,7 @@ class TokenDialog(QDialog):
 
 
 class PhaseRow(QWidget):
-    COLORS = {"pending": "#6b6488", "active": "#b9a6ff", "done": "#3ddc97", "failed": "#ff7a90"}
+    COLORS = {"pending": PENDING, "active": RUNNING, "done": SUCCESS, "failed": FAILED}
     GLYPHS = {"pending": "○", "active": "●", "done": "✓", "failed": "✕"}
 
     def __init__(self, text):
@@ -307,13 +317,13 @@ class PhaseRow(QWidget):
         self.icon.setText(self.GLYPHS[state])
         self.icon.setStyleSheet(f"color: {self.COLORS[state]};")
         if state == "active":
-            self.label.setStyleSheet("color: #ffffff; font-weight: 600;")
+            self.label.setStyleSheet(f"color: {HEADING}; font-weight: 600;")
         elif state == "done":
-            self.label.setStyleSheet("color: #cfc8e8;")
+            self.label.setStyleSheet(f"color: {BRAND_MINT};")
         elif state == "failed":
-            self.label.setStyleSheet("color: #ff7a90; font-weight: 600;")
+            self.label.setStyleSheet(f"color: {FAILED}; font-weight: 600;")
         else:
-            self.label.setStyleSheet("color: #9a93b8;")
+            self.label.setStyleSheet(f"color: {MUTED};")
 
 
 class ActivityDialog(QDialog):
@@ -419,7 +429,7 @@ class ActivityDialog(QDialog):
 
 class RunPage(QWidget):
     STATUS_COLORS = {
-        "idle": "#9a93b8", "running": "#b9a6ff", "success": "#3ddc97", "failed": "#ff7a90",
+        "idle": MUTED, "running": RUNNING, "success": SUCCESS, "failed": FAILED,
     }
 
     def __init__(self, config, get_config):
@@ -530,7 +540,7 @@ class RunPage(QWidget):
             self.tile_pack.set_value(version)
             self._has_pack = True
         else:
-            self.tile_pack.set_value("None", "#9a93b8")
+            self.tile_pack.set_value("None", MUTED)
             self._has_pack = False
 
         # Secrets source
@@ -562,7 +572,7 @@ class RunPage(QWidget):
         if self._name_fetch_id == pid:
             return
         self._name_fetch_id = pid
-        self.tile_modpack.set_value("Loading...", "#9a93b8")
+        self.tile_modpack.set_value("Loading...", MUTED)
         self._name_thread = QThread()
         self._name_worker = ProjectNameWorker(pid)
         self._name_worker.moveToThread(self._name_thread)
@@ -583,7 +593,7 @@ class RunPage(QWidget):
     def _on_name_failed(self, pid):
         self._name_fetch_id = None
         if pid == self.config.curseforge_project_id and pid not in self._project_names:
-            self.tile_modpack.set_value(f"#{pid}", "#9a93b8")
+            self.tile_modpack.set_value(f"#{pid}", MUTED)
 
     def _update_run_enabled(self):
         self.cancel_btn.setEnabled(self._busy)
@@ -1043,7 +1053,7 @@ class ContentPage(QWidget):
         icon_row = QHBoxLayout()
         self.icon_preview = QLabel()
         self.icon_preview.setFixedSize(64, 64)
-        self.icon_preview.setStyleSheet("border: 1px solid #2a2348; border-radius: 6px;")
+        self.icon_preview.setStyleSheet(f"border: 1px solid {BORDER}; border-radius: 6px;")
         self.icon_preview.setAlignment(Qt.AlignCenter)
         self.icon_status = QLabel()
         self.icon_status.setObjectName("SubHeader")

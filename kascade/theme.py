@@ -1,15 +1,47 @@
 from PySide6.QtGui import QPalette, QColor
 
-# Color palette (dark violet, inspired by a modern dashboard look)
-BG = "#0f0b1e"
-SIDEBAR = "#0a0814"
-CARD = "#1a1533"
-INPUT = "#120e24"
-BORDER = "#2a2348"
-ACCENT = "#7c5cff"
-ACCENT_HOVER = "#8f72ff"
-TEXT = "#e8e6f0"
-MUTED = "#9a93b8"
+# ---------------------------------------------------------------------------
+# Kybernetic brand palette (sourced from the logo)
+# ---------------------------------------------------------------------------
+BRAND_DEEP = "#042A37"   # logo background - deep teal
+BRAND_GREEN = "#42E695"  # gradient start
+BRAND_TEAL = "#3BB2B8"   # gradient end
+BRAND_MINT = "#C7F0ED"   # pale accent / tagline
+
+# ---------------------------------------------------------------------------
+# Derived UI palette (semantic roles - reuse these everywhere)
+# ---------------------------------------------------------------------------
+# Surfaces
+SIDEBAR = "#03202A"
+BG = BRAND_DEEP
+CARD = "#0A3A48"
+INPUT = "#04252F"
+BORDER = "#15505F"
+
+# Accents
+ACCENT = BRAND_TEAL
+ACCENT_HOVER = "#4ECDD3"
+GRADIENT_START = BRAND_GREEN
+GRADIENT_END = BRAND_TEAL
+ON_ACCENT = BRAND_DEEP   # text/icon colour on a bright accent fill
+
+# Text
+TEXT = "#E8F6F3"
+MUTED = "#84A7AE"
+HEADING = "#FFFFFF"
+
+# Semantic / status
+PENDING = "#5A7A80"
+RUNNING = "#5FD3D9"
+SUCCESS = BRAND_GREEN
+FAILED = "#FF6B81"
+
+# Buttons / nav (derived shades)
+BTN_BG = "#0C3543"
+BTN_BORDER = "#16505F"
+BTN_HOVER = "#114652"
+NAV_HOVER = "#0A3340"
+NAV_ACTIVE = "#0F4A54"
 
 STYLESHEET = f"""
 * {{
@@ -19,12 +51,12 @@ STYLESHEET = f"""
 
 #Sidebar {{
     background-color: {SIDEBAR};
-    border-right: 1px solid #221c3a;
+    border-right: 1px solid {BORDER};
 }}
 #AppTitle {{
     font-size: 17px;
     font-weight: 700;
-    color: #ffffff;
+    color: {HEADING};
     padding: 6px 10px 14px 10px;
 }}
 QPushButton#NavButton {{
@@ -37,16 +69,16 @@ QPushButton#NavButton {{
     font-size: 14px;
 }}
 QPushButton#NavButton:hover {{
-    background: #181230;
+    background: {NAV_HOVER};
     color: {TEXT};
 }}
 QPushButton#NavButton:checked {{
-    background: #2a1f55;
-    color: #ffffff;
+    background: {NAV_ACTIVE};
+    color: {HEADING};
     font-weight: 600;
 }}
 #SidebarFooter {{
-    color: #6b6488;
+    color: {MUTED};
     font-size: 11px;
     padding: 8px 10px;
 }}
@@ -54,7 +86,7 @@ QPushButton#NavButton:checked {{
 #Header {{
     font-size: 23px;
     font-weight: 700;
-    color: #ffffff;
+    color: {HEADING};
 }}
 #SubHeader {{
     color: {MUTED};
@@ -69,32 +101,32 @@ QPushButton#NavButton:checked {{
 #CardTitle {{
     font-size: 14px;
     font-weight: 600;
-    color: #cfc8e8;
+    color: {BRAND_MINT};
 }}
 
 QPushButton#PrimaryButton {{
     background-color: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-        stop:0 #8a5cff, stop:1 #6336ff);
-    color: #ffffff;
+        stop:0 {GRADIENT_START}, stop:1 {GRADIENT_END});
+    color: {ON_ACCENT};
     border: none;
     border-radius: 9px;
     padding: 10px 20px;
-    font-weight: 600;
+    font-weight: 700;
 }}
 QPushButton#PrimaryButton:hover {{
     background-color: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-        stop:0 #9a72ff, stop:1 #7a52ff);
+        stop:0 #5CEBA6, stop:1 {ACCENT_HOVER});
 }}
-QPushButton#PrimaryButton:disabled {{ background-color: #3a3358; color: #847ca8; }}
+QPushButton#PrimaryButton:disabled {{ background-color: #1C4350; color: #5A7A80; }}
 
 #Hero {{
     border-radius: 16px;
     background-color: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-        stop:0 #221a47, stop:1 #16122b);
-    border: 1px solid #2f2658;
+        stop:0 {CARD}, stop:1 {BG});
+    border: 1px solid {BORDER};
 }}
-#HeroTitle {{ font-size: 26px; font-weight: 800; color: #ffffff; }}
-#HeroSub {{ font-size: 13px; color: #b9b2d6; }}
+#HeroTitle {{ font-size: 26px; font-weight: 800; color: {HEADING}; }}
+#HeroSub {{ font-size: 13px; color: {BRAND_MINT}; }}
 
 #Tile {{
     background-color: {CARD};
@@ -102,28 +134,28 @@ QPushButton#PrimaryButton:disabled {{ background-color: #3a3358; color: #847ca8;
     border-radius: 12px;
 }}
 #StatLabel {{ color: {MUTED}; font-size: 11px; font-weight: 700; }}
-#StatValue {{ color: #ffffff; font-size: 22px; font-weight: 800; }}
+#StatValue {{ color: {HEADING}; font-size: 22px; font-weight: 800; }}
 
 QPushButton#DangerButton {{
-    background-color: #2a1622;
-    color: #ff8095;
-    border: 1px solid #5e2740;
+    background-color: #3A1822;
+    color: #FF8095;
+    border: 1px solid #5E2740;
     border-radius: 9px;
     padding: 10px 18px;
     font-weight: 600;
 }}
-QPushButton#DangerButton:hover {{ background-color: #3a1d2e; }}
-QPushButton#DangerButton:disabled {{ background-color: #221c3a; color: #6b6488; border: 1px solid #322a52; }}
+QPushButton#DangerButton:hover {{ background-color: #4A1E2C; }}
+QPushButton#DangerButton:disabled {{ background-color: {BTN_BG}; color: #5A7A80; border: 1px solid {BTN_BORDER}; }}
 
 QPushButton {{
-    background-color: #221c3a;
+    background-color: {BTN_BG};
     color: {TEXT};
-    border: 1px solid #322a52;
+    border: 1px solid {BTN_BORDER};
     border-radius: 9px;
     padding: 9px 16px;
 }}
-QPushButton:hover {{ background-color: #2a2348; }}
-QPushButton:disabled {{ color: #6b6488; }}
+QPushButton:hover {{ background-color: {BTN_HOVER}; }}
+QPushButton:disabled {{ color: #5A7A80; }}
 
 QPlainTextEdit, QLineEdit, QSpinBox {{
     background-color: {INPUT};
@@ -132,18 +164,9 @@ QPlainTextEdit, QLineEdit, QSpinBox {{
     padding: 7px 9px;
     color: {TEXT};
     selection-background-color: {ACCENT};
+    selection-color: {ON_ACCENT};
 }}
 QPlainTextEdit:focus, QLineEdit:focus, QSpinBox:focus {{ border: 1px solid {ACCENT}; }}
-
-QLabel#StatusBadge {{
-    border-radius: 13px;
-    padding: 6px 16px;
-    font-weight: 600;
-}}
-QLabel#StatusBadge[state="idle"] {{ background: #221c3a; color: {MUTED}; }}
-QLabel#StatusBadge[state="running"] {{ background: #2a2455; color: #b9a6ff; }}
-QLabel#StatusBadge[state="success"] {{ background: #103a2b; color: #3ddc97; }}
-QLabel#StatusBadge[state="failed"] {{ background: #3a1622; color: #ff7a90; }}
 
 QProgressBar {{
     background-color: {INPUT};
@@ -154,14 +177,15 @@ QProgressBar {{
     color: {TEXT};
 }}
 QProgressBar::chunk {{
-    background-color: {ACCENT};
+    background-color: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+        stop:0 {GRADIENT_START}, stop:1 {GRADIENT_END});
     border-radius: 7px;
 }}
 
 QScrollArea {{ border: none; background: transparent; }}
 QScrollBar:vertical {{ background: transparent; width: 10px; margin: 2px; }}
-QScrollBar::handle:vertical {{ background: #322a52; border-radius: 5px; min-height: 28px; }}
-QScrollBar::handle:vertical:hover {{ background: #43396e; }}
+QScrollBar::handle:vertical {{ background: {BTN_BORDER}; border-radius: 5px; min-height: 28px; }}
+QScrollBar::handle:vertical:hover {{ background: {ACCENT}; }}
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
 QScrollBar::add-page, QScrollBar::sub-page {{ background: transparent; }}
 """
@@ -175,12 +199,12 @@ def apply_theme(app):
     pal.setColor(QPalette.Base, QColor(INPUT))
     pal.setColor(QPalette.AlternateBase, QColor(CARD))
     pal.setColor(QPalette.Text, QColor(TEXT))
-    pal.setColor(QPalette.Button, QColor("#221c3a"))
+    pal.setColor(QPalette.Button, QColor(BTN_BG))
     pal.setColor(QPalette.ButtonText, QColor(TEXT))
     pal.setColor(QPalette.Highlight, QColor(ACCENT))
-    pal.setColor(QPalette.HighlightedText, QColor("#ffffff"))
+    pal.setColor(QPalette.HighlightedText, QColor(ON_ACCENT))
     pal.setColor(QPalette.ToolTipBase, QColor(CARD))
     pal.setColor(QPalette.ToolTipText, QColor(TEXT))
-    pal.setColor(QPalette.PlaceholderText, QColor("#6b6488"))
+    pal.setColor(QPalette.PlaceholderText, QColor(MUTED))
     app.setPalette(pal)
     app.setStyleSheet(STYLESHEET)
