@@ -48,6 +48,7 @@ from PySide6.QtWidgets import (
 )
 
 from . import __version__
+from . import backup as content_backup
 from .config import Config
 from .core import Updater, CancelledError, UpdateError, PHASES
 from .paths import resource_path
@@ -1238,6 +1239,19 @@ class ContentPage(QWidget):
         icon_card.add_layout(icon_btns)
         layout.addWidget(icon_card)
 
+        # Backup & restore
+        backup_card = Card("Backup & restore")
+        backup_card.add(QLabel(
+            "Save all your custom mods, configs, and server-files into a single zip file - "
+            "useful before reinstalling Kascade on another PC. Restore merges the zip on "
+            "top of your current content, overwriting any files with the same name."
+        ))
+        backup_card.add_layout(self._row([
+            ("Create backup...", self.create_backup, True),
+            ("Restore from backup...", self.restore_backup, False),
+        ]))
+        layout.addWidget(backup_card)
+
         layout.addStretch(1)
         scroll.setWidget(container)
         _configure_scroll(scroll)
@@ -1390,6 +1404,71 @@ class ContentPage(QWidget):
             except OSError as e:
                 QMessageBox.warning(self, "Remove failed", str(e))
         self._refresh()
+
+    def create_backup(self):
+        from datetime import datetime
+        default_name = f"kascade-content-{datetime.now().strftime('%Y-%m-%d_%H%M')}.zip"
+        target, _ = QFileDialog.getSaveFileName(
+            self, "Save backup as", default_name, "Zip files (*.zip)"
+        )
+        if not target:
+            return
+        try:
+            result = content_backup.create_backup(
+                self.config.post_update_dir, target, self.config.content_subfolders()
+            )
+        except content_backup.BackupError as e:
+            QMessageBox.warning(self, "Backup failed", str(e))
+            return
+        except OSError as e:
+            QMessageBox.warning(self, "Backup failed", f"Could not write backup:\n{e}")
+            return
+        if result.file_count == 0:
+            Toast.show_message(self, "Backup created (no custom content found)", "info")
+        else:
+            Toast.show_message(
+                self, f"Backup created ({result.file_count} files)", "success"
+            )
+
+    def restore_backup(self):
+        source, _ = QFileDialog.getOpenFileName(
+            self, "Choose a backup zip", "", "Zip files (*.zip);;All files (*.*)"
+        )
+        if not source:
+            return
+        manifest = content_backup.read_manifest(source)
+        if manifest is None:
+            confirm = QMessageBox.question(
+                self,
+                "Not a Kascade backup",
+                "This zip doesn't carry a Kascade manifest. It may still restore "
+                "correctly, but only do this if you trust where it came from.\n\n"
+                "Existing files with the same names will be overwritten. Continue?",
+            )
+        else:
+            file_count = manifest.get("file_count", "?")
+            folders = ", ".join(manifest.get("folders") or []) or "none"
+            confirm = QMessageBox.question(
+                self,
+                "Restore backup",
+                f"Restore {file_count} files into folders: {folders}?\n\n"
+                "Existing files with the same names will be overwritten. "
+                "Other files are left alone.",
+            )
+        if confirm != QMessageBox.Yes:
+            return
+        try:
+            result = content_backup.restore_backup(source, self.config.post_update_dir)
+        except content_backup.BackupError as e:
+            QMessageBox.warning(self, "Restore failed", str(e))
+            return
+        except OSError as e:
+            QMessageBox.warning(self, "Restore failed", f"Could not extract backup:\n{e}")
+            return
+        self._refresh()
+        Toast.show_message(
+            self, f"Restored {result.file_count} files from backup", "success"
+        )
 
 
 class SecretsPage(QWidget):
