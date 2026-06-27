@@ -29,6 +29,49 @@ def _is_local_host(host: str) -> bool:
     return ip.is_loopback or ip.is_private or ip.is_link_local
 
 
+def find_remote_file(sftp, search_dir, filename, log=None, depth=0):
+    """Recursively find every file named `filename` (case-insensitive) under
+    `search_dir`. Returns a list of full remote paths."""
+    matches = []
+    filename_lower = filename.lower()
+    try:
+        items = sftp.listdir_attr(search_dir)
+    except IOError as e:
+        if depth == 0 and log:
+            log(f"    Warning: Could not list directory {search_dir}: {e}")
+        return matches
+
+    for item_attr in items:
+        item_name = item_attr.filename
+        if search_dir == "/":
+            item_path = f"/{item_name}"
+        elif search_dir.endswith("/"):
+            item_path = f"{search_dir}{item_name}"
+        else:
+            item_path = f"{search_dir}/{item_name}"
+
+        if S_ISDIR(item_attr.st_mode):
+            matches.extend(find_remote_file(sftp, item_path, filename, log, depth + 1))
+        elif item_name.lower() == filename_lower:
+            matches.append(item_path)
+    return matches
+
+
+def subdir_from_match(search_base, match_path):
+    """Given the folder we searched under (e.g. '/config') and a full remote path
+    a file was found at (e.g. '/config/dcint/backup.toml'), return the file's
+    subdirectory relative to that base ('dcint'; '' when it sits in the base)."""
+    base = search_base.rstrip("/")
+    rel = match_path
+    if rel.startswith(base):
+        rel = rel[len(base):]
+    rel = rel.strip("/")
+    # rel is now like 'dcint/backup.toml' or 'backup.toml'; the subdir is the
+    # directory part.
+    parts = rel.split("/")
+    return "/".join(parts[:-1])
+
+
 class CancelledError(Exception):
     pass
 
@@ -39,6 +82,68 @@ class UpdateError(Exception):
     def __init__(self, message, help_url=None):
         super().__init__(message)
         self.help_url = help_url
+
+
+def connect_sftp(secrets, log=print):
+    """Open an SFTP session to the AMP server described by `secrets`.
+
+    Returns (client, sftp); the caller is responsible for closing both. Raises
+    UpdateError with a user-readable message on any connection failure. Shared by
+    the updater and the GUI's "Find on server" path lookup so both verify the
+    host key and report problems identically.
+    """
+    host = secrets["AMP_SFTP_HOST"]
+    try:
+        port = int(secrets.get("AMP_SFTP_PORT") or 2224)
+    except (TypeError, ValueError):
+        raise UpdateError(
+            f"The SFTP port isn't a number: '{secrets.get('AMP_SFTP_PORT')}'. "
+            "Fix it on the Secrets page."
+        )
+    # Verify the server's host key (trust-on-first-use). The first connection
+    # records the key; if a known host later presents a different key we abort
+    # rather than hand credentials to a possible man-in-the-middle.
+    known_hosts = os.path.join(config_dir(), "known_hosts")
+    if not os.path.exists(known_hosts):
+        open(known_hosts, "a").close()
+    client = paramiko.SSHClient()
+    client.load_host_keys(known_hosts)
+    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    try:
+        client.connect(
+            hostname=host,
+            port=port,
+            username=secrets["AMP_SFTP_USER"],
+            password=secrets["AMP_SFTP_PASS"],
+            look_for_keys=False,
+            allow_agent=False,
+            timeout=30,
+        )
+    except paramiko.BadHostKeyException as e:
+        raise UpdateError(
+            f"The SFTP server's identity has changed since the last connection to "
+            f"{host}:{port}. This can happen if the server was rebuilt - or it can mean "
+            f"the connection is being intercepted. No files were uploaded.\n\n"
+            f"If you trust this change, remove the entry for this host from:\n"
+            f"{known_hosts}\nand try again.\n\nDetails: {e}"
+        )
+    except paramiko.AuthenticationException:
+        raise UpdateError(
+            "SFTP login was rejected. Check the SFTP username and password on the "
+            "Secrets page."
+        )
+    except (socket.gaierror, socket.timeout, ConnectionError, OSError) as e:
+        raise UpdateError(
+            f"Couldn't connect to the SFTP server at {host}:{port} ({e}). Check the "
+            "SFTP host and port on the Secrets page."
+        )
+    except paramiko.SSHException as e:
+        raise UpdateError(
+            f"SFTP connection error to {host}:{port} ({e}). Check the SFTP host, port, "
+            "and credentials on the Secrets page."
+        )
+    sftp = client.open_sftp()
+    return client, sftp
 
 
 PHASES = [
@@ -61,6 +166,10 @@ class Updater:
         self.log = log
         self._is_cancelled = is_cancelled or (lambda: False)
         self._phase_cb = phase or (lambda key: None)
+        # Config files that had no pinned path and weren't found on the server,
+        # so they landed in config/ root and may not take effect. Surfaced after
+        # the run so the user can pin a path for them.
+        self.unplaced_config = []
 
     def _phase(self, key):
         self._phase_cb(key)
@@ -147,29 +256,7 @@ class Updater:
             pass
 
     def _find_remote_file(self, sftp, search_dir, filename, depth=0):
-        matches = []
-        filename_lower = filename.lower()
-        try:
-            items = sftp.listdir_attr(search_dir)
-        except IOError as e:
-            if depth == 0:
-                self.log(f"    Warning: Could not list directory {search_dir}: {e}")
-            return matches
-
-        for item_attr in items:
-            item_name = item_attr.filename
-            if search_dir == "/":
-                item_path = f"/{item_name}"
-            elif search_dir.endswith("/"):
-                item_path = f"{search_dir}{item_name}"
-            else:
-                item_path = f"{search_dir}/{item_name}"
-
-            if S_ISDIR(item_attr.st_mode):
-                matches.extend(self._find_remote_file(sftp, item_path, filename, depth + 1))
-            elif item_name.lower() == filename_lower:
-                matches.append(item_path)
-        return matches
+        return find_remote_file(sftp, search_dir, filename, log=self.log, depth=depth)
 
     def _upload_post_update_files(self, sftp, post_update_dir):
         remote_base = self.cfg.remote_base
@@ -195,8 +282,13 @@ class Updater:
                     self.log(f"\n  Processing: {filename}")
 
                     if filename in known_paths:
-                        subdir = known_paths[filename]
-                        remote_dir = f"{remote_search_base}/{subdir}"
+                        # An empty/'.'/'/' subdir means the folder root; strip it
+                        # so the path is 'config/file', not 'config//file'.
+                        subdir = (known_paths[filename] or "").strip("/").strip()
+                        if subdir in ("", "."):
+                            remote_dir = remote_search_base
+                        else:
+                            remote_dir = f"{remote_search_base}/{subdir}"
                         remote_path = f"{remote_dir}/{filename}"
                         self.log(f"    Using known path: {remote_path}")
                         self._makedirs(sftp, remote_dir)
@@ -211,6 +303,11 @@ class Updater:
                         remote_path = f"{remote_search_base}/{filename}"
                         self.log(f"    No match found - uploading to: {remote_path}")
                         self._upload(sftp, local_file_path, remote_path)
+                        # A config file that wasn't found anywhere on the server
+                        # landed in config/ root, where most mods won't read it.
+                        # Flag it so the run can tell the user to pin a path.
+                        if folder == "config":
+                            self.unplaced_config.append(filename)
                     elif len(matching_paths) == 1:
                         remote_path = matching_paths[0]
                         self.log(f"    Replacing: {remote_path}")
@@ -220,6 +317,21 @@ class Updater:
                         for remote_path in matching_paths:
                             self.log(f"      - {remote_path}")
                             self._upload(sftp, local_file_path, remote_path)
+
+        if self.unplaced_config:
+            self.log("\n" + "!" * 50)
+            self.log(
+                f"WARNING: {len(self.unplaced_config)} config file(s) had no known "
+                "destination and weren't found on the server, so they were placed in "
+                "config/ root and may not take effect:"
+            )
+            for name in self.unplaced_config:
+                self.log(f"    - {name}")
+            self.log(
+                "Set a path for them on the Content page ('Find on server' or "
+                "'Set path')."
+            )
+            self.log("!" * 50)
 
         server_files_dir = os.path.join(post_update_dir, "server-files")
         if os.path.isdir(server_files_dir):
@@ -357,57 +469,7 @@ class Updater:
         self._check_cancel()
         self._phase("connect")
         self.log("Connecting to SFTP...")
-        host = self.s["AMP_SFTP_HOST"]
-        try:
-            port = int(self.s.get("AMP_SFTP_PORT") or 2224)
-        except (TypeError, ValueError):
-            raise UpdateError(
-                f"The SFTP port isn't a number: '{self.s.get('AMP_SFTP_PORT')}'. "
-                "Fix it on the Secrets page."
-            )
-        # Verify the server's host key (trust-on-first-use). The first connection
-        # records the key; if a known host later presents a different key we abort
-        # rather than hand credentials to a possible man-in-the-middle.
-        known_hosts = os.path.join(config_dir(), "known_hosts")
-        if not os.path.exists(known_hosts):
-            open(known_hosts, "a").close()
-        client = paramiko.SSHClient()
-        client.load_host_keys(known_hosts)
-        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-        try:
-            client.connect(
-                hostname=host,
-                port=port,
-                username=self.s["AMP_SFTP_USER"],
-                password=self.s["AMP_SFTP_PASS"],
-                look_for_keys=False,
-                allow_agent=False,
-                timeout=30,
-            )
-        except paramiko.BadHostKeyException as e:
-            raise UpdateError(
-                f"The SFTP server's identity has changed since the last connection to "
-                f"{host}:{port}. This can happen if the server was rebuilt - or it can mean "
-                f"the connection is being intercepted. No files were uploaded.\n\n"
-                f"If you trust this change, remove the entry for this host from:\n"
-                f"{known_hosts}\nand try again.\n\nDetails: {e}"
-            )
-        except paramiko.AuthenticationException:
-            raise UpdateError(
-                "SFTP login was rejected. Check the SFTP username and password on the "
-                "Secrets page."
-            )
-        except (socket.gaierror, socket.timeout, ConnectionError, OSError) as e:
-            raise UpdateError(
-                f"Couldn't connect to the SFTP server at {host}:{port} ({e}). Check the "
-                "SFTP host and port on the Secrets page."
-            )
-        except paramiko.SSHException as e:
-            raise UpdateError(
-                f"SFTP connection error to {host}:{port} ({e}). Check the SFTP host, port, "
-                "and credentials on the Secrets page."
-            )
-        sftp = client.open_sftp()
+        client, sftp = connect_sftp(self.s, log=self.log)
 
         try:
             self._phase("clean_remote")
