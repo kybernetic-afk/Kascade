@@ -94,8 +94,11 @@ are pushed to the server, overriding the files that came with the pack.
   server-files/  Files copied directly to the server root. Put a custom
                  server-icon.png here, or startserver scripts, etc.
 
-For files that must live in a specific sub-path (e.g. a config inside an
-author subfolder), use the "Known file paths" setting in the app.
+For a config file that must live in a specific sub-path (e.g. inside an author
+subfolder), pin its path on the Content page - use "Find on server" to locate
+where it currently lives, or "Set path" to type the subfolder yourself. Files
+without a pinned path are matched by name against the server and, if not found,
+land in the config root.
 """
 
 
@@ -126,6 +129,21 @@ class Config:
 
     def content_subfolders(self):
         return list(self.post_update_folders) + ["server-files"]
+
+    def get_config_path(self, filename):
+        """Return the pinned sub-path for a config file (relative to config/), or
+        None if it has no pin and is matched by name on the server."""
+        return self.known_file_paths.get("config", {}).get(filename)
+
+    def set_config_path(self, filename, subdir):
+        """Pin (or, with a blank subdir, unpin) the destination sub-path for a
+        config file. `subdir` is relative to the config/ folder; '' means root."""
+        paths = self.known_file_paths.setdefault("config", {})
+        subdir = (subdir or "").strip().strip("/")
+        if subdir:
+            paths[filename] = subdir
+        else:
+            paths.pop(filename, None)
 
     def ensure_dirs(self):
         """Create the app's working folders if they don't exist. Best-effort."""

@@ -35,6 +35,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QListWidget,
+    QListWidgetItem,
     QMessageBox,
     QPlainTextEdit,
     QProgressBar,
@@ -50,7 +51,15 @@ from PySide6.QtWidgets import (
 from . import __version__
 from . import backup as content_backup
 from .config import Config
-from .core import Updater, CancelledError, UpdateError, PHASES
+from .core import (
+    Updater,
+    CancelledError,
+    UpdateError,
+    PHASES,
+    connect_sftp,
+    find_remote_file,
+    subdir_from_match,
+)
 from .paths import resource_path
 from .curseforge import find_latest_server_pack, download_file, get_project_name, CurseForgeError
 from .secrets_bws import (
@@ -335,7 +344,17 @@ class Worker(QObject):
                 phase=self.phase.emit,
             )
             updater.run()
-            self.finished.emit(True, "Update completed!")
+            if updater.unplaced_config:
+                names = ", ".join(updater.unplaced_config)
+                self.finished.emit(
+                    True,
+                    f"Update completed, but {len(updater.unplaced_config)} config "
+                    f"file(s) had no known destination and were placed in config/ root, "
+                    f"so they may not take effect: {names}. Set a path for them on the "
+                    f"Content page.",
+                )
+            else:
+                self.finished.emit(True, "Update completed!")
         except CancelledError as e:
             self.finished.emit(False, str(e))
         except UpdateError as e:
@@ -417,6 +436,94 @@ class DownloadWorker(QObject):
             self.finished.emit(False, str(e))
         except Exception as e:
             self.finished.emit(False, str(e))
+
+
+class RemoteSearchWorker(QObject):
+    """Connects via SFTP and finds where a config file currently lives on the
+    server. Emits finished(success, matches_or_error)."""
+
+    finished = Signal(bool, object)  # (success, list[str] of remote paths OR error str)
+
+    def __init__(self, config, filename):
+        super().__init__()
+        self.config = config
+        self.filename = filename
+
+    def run(self):
+        try:
+            secrets = resolve_secrets(self.config.secrets, self.config.bws_project_id)
+            client, sftp = connect_sftp(secrets)
+            try:
+                search_base = f"{self.config.remote_base}config"
+                matches = find_remote_file(sftp, search_base, self.filename)
+            finally:
+                sftp.close()
+                client.close()
+            self.finished.emit(True, matches)
+        except (UpdateError, SecretError) as e:
+            self.finished.emit(False, str(e))
+        except Exception as e:
+            self.finished.emit(False, str(e))
+
+
+def ensure_bws_token(parent) -> bool:
+    """Ensure a Bitwarden access token is available, prompting for one if not.
+
+    Returns True if a token is present (or was supplied), False if the user
+    cancelled. Shared by the Run and Content pages.
+    """
+    if token_present():
+        return True
+    dialog = TokenDialog(parent)
+    if dialog.exec() != QDialog.Accepted:
+        return False
+    token = dialog.token()
+    if not token:
+        QMessageBox.warning(parent, "No token", "No token was entered.")
+        return False
+    set_token_for_session(token)
+    if dialog.should_remember():
+        persist_token(token)
+    return True
+
+
+class BusyDialog(QDialog):
+    """A small modal 'please wait' dialog with an indeterminate bar. Stays open
+    until finish() is called by the operation that owns it."""
+
+    def __init__(self, parent, message):
+        super().__init__(parent)
+        self.setWindowTitle("Please wait")
+        self.setModal(True)
+        self.setMinimumWidth(380)
+        self._can_close = False
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(22, 20, 22, 20)
+        layout.setSpacing(14)
+        label = QLabel(message)
+        label.setWordWrap(True)
+        layout.addWidget(label)
+        bar = QProgressBar()
+        bar.setRange(0, 0)
+        bar.setTextVisible(False)
+        layout.addWidget(bar)
+
+    def finish(self):
+        self._can_close = True
+        self.accept()
+
+    def closeEvent(self, event):
+        if self._can_close:
+            event.accept()
+        else:
+            event.ignore()
+
+    def keyPressEvent(self, event):
+        # Don't let Escape dismiss the dialog before the lookup finishes.
+        if event.key() == Qt.Key_Escape and not self._can_close:
+            event.ignore()
+        else:
+            super().keyPressEvent(event)
 
 
 class TokenDialog(QDialog):
@@ -776,22 +883,7 @@ class RunPage(QWidget):
         pass
 
     def _ensure_token(self) -> bool:
-        if token_present():
-            return True
-        dialog = TokenDialog(self)
-        if dialog.exec() != QDialog.Accepted:
-            return False
-        token = dialog.token()
-        if not token:
-            QMessageBox.warning(self, "No token", "No token was entered.")
-            return False
-        set_token_for_session(token)
-        if dialog.should_remember():
-            if persist_token(token):
-                self.append("Token saved (encrypted) for next time.")
-            else:
-                self.append("Warning: could not save token persistently; using it for this session only.")
-        return True
+        return ensure_bws_token(self)
 
     def _set_busy(self, busy):
         self._busy = busy
@@ -1153,9 +1245,17 @@ class FileEditorDialog(QDialog):
 
 
 class ContentPage(QWidget):
-    def __init__(self, config):
+    def __init__(self, config, get_config=None):
         super().__init__()
         self.config = config
+        # Returns the live merged config (Settings + Secrets applied); used only
+        # by 'Find on server', which needs the current remote_base and secrets.
+        self.get_config = get_config or (lambda: config)
+        self._search_thread = None
+        self._search_worker = None
+        self._search_busy = None
+        self._search_result = None
+        self._search_base = ""
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(28, 24, 28, 24)
@@ -1166,7 +1266,8 @@ class ContentPage(QWidget):
         explain = QLabel(
             "After the base server pack is uploaded, your custom content is applied on top:\n"
             "  -  Mods: extra or replacement .jar files added to the server's mods folder.\n"
-            "  -  Config overrides: config files matched by name and replaced (new ones added).\n"
+            "  -  Config overrides: config files matched by name and replaced. Pin an exact "
+            "destination with 'Find on server' or 'Set path' so a file can't be missed.\n"
             "  -  Server icon: a 64x64 server-icon.png placed in the server root."
         )
         explain.setObjectName("SubHeader")
@@ -1209,6 +1310,20 @@ class ContentPage(QWidget):
             ("Remove", self.remove_configs, False),
             ("Open folder", lambda: self._open(self._config_dir()), False),
         ]))
+        # Destination row: pin where the selected config file is written on the
+        # server, so it can't be missed by name-matching.
+        dest_row = QHBoxLayout()
+        dest_label = QLabel("Selected file's destination:")
+        dest_label.setObjectName("SubHeader")
+        dest_row.addWidget(dest_label)
+        find_btn = QPushButton("Find on server...")
+        find_btn.clicked.connect(self.find_on_server)
+        set_btn = QPushButton("Set path...")
+        set_btn.clicked.connect(self.set_config_path)
+        dest_row.addWidget(find_btn)
+        dest_row.addWidget(set_btn)
+        dest_row.addStretch(1)
+        config_card.add_layout(dest_row)
         layout.addWidget(config_card)
 
         # Server icon
@@ -1301,11 +1416,22 @@ class ContentPage(QWidget):
         self._refresh()
         super().showEvent(event)
 
+    def _config_destination(self, name):
+        """Human label for where a config file will be written on the server."""
+        subdir = self.config.get_config_path(name)
+        if subdir is None:
+            return "Auto (match on server)"
+        subdir = subdir.strip("/")
+        return f"config/{subdir}/{name}" if subdir else f"config/{name}"
+
     def _refresh(self):
         self.mods_list.clear()
         self.mods_list.addItems(self._list_files(self._mods_dir()))
         self.config_list.clear()
-        self.config_list.addItems(self._list_files(self._config_dir()))
+        for name in self._list_files(self._config_dir()):
+            item = QListWidgetItem(f"{name}    →    {self._config_destination(name)}")
+            item.setData(Qt.UserRole, name)
+            self.config_list.addItem(item)
         icon = self._icon_path()
         if os.path.isfile(icon):
             pix = QPixmap(icon)
@@ -1356,12 +1482,21 @@ class ContentPage(QWidget):
         FileEditorDialog(self, path).exec()
         self._refresh()
 
-    def edit_config(self):
+    def _item_name(self, item):
+        """The bare filename for a list item (config rows carry it in UserRole;
+        mod rows use the display text directly)."""
+        return item.data(Qt.UserRole) or item.text()
+
+    def _selected_config_name(self):
         item = self.config_list.currentItem()
-        if not item:
+        return self._item_name(item) if item else None
+
+    def edit_config(self):
+        name = self._selected_config_name()
+        if not name:
             QMessageBox.information(self, "Edit", "Select a config file first.")
             return
-        FileEditorDialog(self, os.path.join(self._config_dir(), item.text())).exec()
+        FileEditorDialog(self, os.path.join(self._config_dir(), name)).exec()
 
     def remove_configs(self):
         self._remove_selected(self.config_list, self._config_dir())
@@ -1371,15 +1506,147 @@ class ContentPage(QWidget):
         if not items:
             QMessageBox.information(self, "Remove", "Select one or more files first.")
             return
-        names = ", ".join(i.text() for i in items)
-        if QMessageBox.question(self, "Remove files", f"Remove {names}?") != QMessageBox.Yes:
+        names = [self._item_name(i) for i in items]
+        if QMessageBox.question(self, "Remove files", f"Remove {', '.join(names)}?") != QMessageBox.Yes:
             return
-        for item in items:
+        for name in names:
             try:
-                os.remove(os.path.join(directory, item.text()))
+                os.remove(os.path.join(directory, name))
             except OSError as e:
-                QMessageBox.warning(self, "Remove failed", f"{item.text()}: {e}")
+                QMessageBox.warning(self, "Remove failed", f"{name}: {e}")
+            # Drop any pinned destination for a removed config file.
+            if directory == self._config_dir():
+                self.config.set_config_path(name, "")
+        if directory == self._config_dir():
+            self.config.save()
         self._refresh()
+
+    # ----- config destination paths -----
+    def _parse_dest_to_subdir(self, text, name):
+        """Normalize whatever the user typed into a sub-path relative to config/.
+
+        Accepts a bare sub-folder ('dcint'), a 'config/...'-prefixed path, or a
+        full path that ends with the filename, and returns just the sub-folder.
+        """
+        t = (text or "").strip().strip("/")
+        if t.lower() == "config":
+            return ""
+        if t.lower().startswith("config/"):
+            t = t[len("config/"):]
+        if t == name:
+            return ""
+        if t.endswith("/" + name):
+            t = t[: -(len(name) + 1)]
+        return t.strip("/")
+
+    def _pin_destination(self, name, subdir, toast):
+        self.config.set_config_path(name, subdir)
+        self.config.save()
+        self._refresh()
+        Toast.show_message(self, toast, "success")
+
+    def set_config_path(self):
+        name = self._selected_config_name()
+        if not name:
+            QMessageBox.information(self, "Set path", "Select a config file first.")
+            return
+        current = self.config.get_config_path(name) or ""
+        text, ok = QInputDialog.getText(
+            self,
+            "Set destination path",
+            f"Sub-folder under config/ where '{name}' should be written.\n"
+            "Leave blank to revert to automatic name-matching.\n"
+            "Examples:  dcintegration   or   ftbquests/chapters",
+            text=current,
+        )
+        if not ok:
+            return
+        self._pin_destination(name, self._parse_dest_to_subdir(text, name),
+                              "Destination updated")
+
+    def find_on_server(self):
+        name = self._selected_config_name()
+        if not name:
+            QMessageBox.information(self, "Find on server", "Select a config file first.")
+            return
+        config = self.get_config()
+        if config_needs_bws(config.secrets) and not ensure_bws_token(self):
+            return
+
+        self._search_result = None
+        self._search_base = f"{config.remote_base}config"
+        self._search_busy = BusyDialog(self, f"Searching the server for '{name}'...")
+        self._search_thread = QThread()
+        self._search_worker = RemoteSearchWorker(config, name)
+        self._search_worker.moveToThread(self._search_thread)
+        self._search_thread.started.connect(self._search_worker.run)
+        self._search_worker.finished.connect(self._on_search_done)
+        self._search_worker.finished.connect(self._search_thread.quit)
+        self._search_thread.finished.connect(self._search_thread.deleteLater)
+        self._search_thread.start()
+        self._search_busy.exec()  # modal; closed by _on_search_done via finish()
+        self._handle_search_result(name)
+
+    def _on_search_done(self, success, result):
+        self._search_result = (success, result)
+        self._search_worker = None
+        if self._search_busy is not None:
+            self._search_busy.finish()
+
+    def _handle_search_result(self, name):
+        result = self._search_result
+        self._search_result = None
+        self._search_busy = None
+        if result is None:
+            return  # dialog closed without a result
+        success, payload = result
+        if not success:
+            show_error_dialog(self, "Find on server", str(payload))
+            return
+
+        matches = payload or []
+        if not matches:
+            text, ok = QInputDialog.getText(
+                self,
+                "Not found on server",
+                f"'{name}' wasn't found anywhere under config/ on the server.\n"
+                "The modpack may not ship it (it can be created on first launch).\n\n"
+                "Enter the sub-folder under config/ where it should go "
+                "(blank = config root):",
+            )
+            if ok:
+                self._pin_destination(name, self._parse_dest_to_subdir(text, name),
+                                      "Destination set")
+            return
+
+        # Offer the discovered location(s); the box is editable so the user can
+        # also type a sub-folder by hand.
+        subdirs = []
+        for match in matches:
+            sd = subdir_from_match(self._search_base, match)
+            if sd not in subdirs:
+                subdirs.append(sd)
+        labels = []
+        label_map = {}
+        for sd in subdirs:
+            label = f"config/{sd}/{name}" if sd else f"config/{name}"
+            labels.append(label)
+            label_map[label] = sd
+        choice, ok = QInputDialog.getItem(
+            self,
+            "Found on server",
+            f"'{name}' was found at the location(s) below. Pick where future "
+            "updates should write it (or type a sub-folder):",
+            labels,
+            0,
+            True,
+        )
+        if not ok:
+            return
+        subdir = label_map.get(choice)
+        if subdir is None:
+            subdir = self._parse_dest_to_subdir(choice, name)
+        self._pin_destination(name, subdir, "Destination pinned")
 
     def set_icon(self):
         path, _ = QFileDialog.getOpenFileName(
@@ -1673,7 +1940,7 @@ class MainWindow(QWidget):
         self.stack = QStackedWidget()
         self.settings_page = SettingsPage(self.config)
         self.secrets_page = SecretsPage(self.config)
-        self.content_page = ContentPage(self.config)
+        self.content_page = ContentPage(self.config, self._current_config)
         self.run_page = RunPage(self.config, self._current_config)
         self.stack.addWidget(self.run_page)       # index 0
         self.stack.addWidget(self.content_page)   # index 1
