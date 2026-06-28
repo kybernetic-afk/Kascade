@@ -1,4 +1,3 @@
-import json
 import os
 import sys
 
@@ -1099,10 +1098,13 @@ class SettingsPage(QWidget):
         self.post_update_folders.setFont(QFont("Consolas", 9))
         self.post_update_folders.setMaximumHeight(80)
         post_card.add(self.post_update_folders)
-        post_card.add(QLabel("Known file paths (JSON):"))
-        self.known_file_paths = QPlainTextEdit(json.dumps(config.known_file_paths, indent=2))
-        self.known_file_paths.setFont(QFont("Consolas", 9))
-        post_card.add(self.known_file_paths)
+        hint = QLabel(
+            "Per-file config destinations are managed on the Content page "
+            "(“Find on server” / “Set path”)."
+        )
+        hint.setObjectName("SubHeader")
+        hint.setWordWrap(True)
+        post_card.add(hint)
         layout.addWidget(post_card)
 
         # Folders
@@ -1153,14 +1155,9 @@ class SettingsPage(QWidget):
         return row
 
     def apply_to_config(self) -> bool:
-        try:
-            known = json.loads(self.known_file_paths.toPlainText() or "{}")
-            if not isinstance(known, dict):
-                raise ValueError("Known file paths must be a JSON object.")
-        except (json.JSONDecodeError, ValueError) as e:
-            QMessageBox.warning(self, "Invalid JSON", f"Known file paths: {e}")
-            return False
-
+        # Note: known_file_paths is intentionally NOT touched here. It is owned by
+        # the Content page (per-file destinations); applying a stale snapshot of it
+        # from this page would clobber pins the user just set there.
         self.config.base_dir = self.base_dir.text().strip()
         self.config.post_update_dir = self.post_update_dir.text().strip()
         self.config.remote_base = self.remote_base.text().strip() or "/"
@@ -1180,7 +1177,6 @@ class SettingsPage(QWidget):
             for ln in self.post_update_folders.toPlainText().splitlines()
             if ln.strip()
         ]
-        self.config.known_file_paths = known
         return True
 
     def save(self):
@@ -1516,7 +1512,7 @@ class ContentPage(QWidget):
                 QMessageBox.warning(self, "Remove failed", f"{name}: {e}")
             # Drop any pinned destination for a removed config file.
             if directory == self._config_dir():
-                self.config.set_config_path(name, "")
+                self.config.set_config_path(name, None)
         if directory == self._config_dir():
             self.config.save()
         self._refresh()
@@ -1529,7 +1525,7 @@ class ContentPage(QWidget):
         full path that ends with the filename, and returns just the sub-folder.
         """
         t = (text or "").strip().strip("/")
-        if t.lower() == "config":
+        if t.lower() == "config" or t == ".":
             return ""
         if t.lower().startswith("config/"):
             t = t[len("config/"):]
@@ -1550,16 +1546,32 @@ class ContentPage(QWidget):
         if not name:
             QMessageBox.information(self, "Set path", "Select a config file first.")
             return
-        current = self.config.get_config_path(name) or ""
+        current = self.config.get_config_path(name)
+        # Represent a pin: None -> blank (unpinned), "" -> "config" (the root),
+        # else the sub-folder. This round-trips through _parse_dest_to_subdir.
+        if current is None:
+            prefill = ""
+        elif current.strip("/") == "":
+            prefill = "config"
+        else:
+            prefill = current.strip("/")
         text, ok = QInputDialog.getText(
             self,
             "Set destination path",
             f"Sub-folder under config/ where '{name}' should be written.\n"
+            "Type 'config' for the config root.\n"
             "Leave blank to revert to automatic name-matching.\n"
             "Examples:  dcintegration   or   ftbquests/chapters",
-            text=current,
+            text=prefill,
         )
         if not ok:
+            return
+        if not text.strip():
+            # Blank reverts to automatic name-matching.
+            self.config.set_config_path(name, None)
+            self.config.save()
+            self._refresh()
+            Toast.show_message(self, "Reverted to auto-match", "info")
             return
         self._pin_destination(name, self._parse_dest_to_subdir(text, name),
                               "Destination updated")
