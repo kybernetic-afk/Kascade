@@ -84,13 +84,25 @@ class UpdateError(Exception):
         self.help_url = help_url
 
 
-def connect_sftp(secrets, log=print):
+# Seconds without any data on the SFTP channel before a transfer is treated as
+# stalled. paramiko has no per-transfer timeout, so a hung put() would otherwise
+# block forever; with a timeout it raises and the upload retry loop recovers.
+SFTP_STALL_TIMEOUT = 60
+# How often to send a keepalive so a dead peer is detected instead of hanging.
+SFTP_KEEPALIVE = 15
+
+
+def connect_sftp(secrets, log=print, stall_timeout=SFTP_STALL_TIMEOUT):
     """Open an SFTP session to the AMP server described by `secrets`.
 
     Returns (client, sftp); the caller is responsible for closing both. Raises
     UpdateError with a user-readable message on any connection failure. Shared by
     the updater and the GUI's "Find on server" path lookup so both verify the
     host key and report problems identically.
+
+    A keepalive and a per-channel stall timeout are set so a transfer that hangs
+    (a known paramiko failure mode on large files) raises instead of blocking the
+    app forever - the caller's retry loop then re-attempts it.
     """
     host = secrets["AMP_SFTP_HOST"]
     try:
@@ -118,6 +130,8 @@ def connect_sftp(secrets, log=print):
             look_for_keys=False,
             allow_agent=False,
             timeout=30,
+            banner_timeout=30,
+            auth_timeout=30,
         )
     except paramiko.BadHostKeyException as e:
         raise UpdateError(
@@ -142,7 +156,15 @@ def connect_sftp(secrets, log=print):
             f"SFTP connection error to {host}:{port} ({e}). Check the SFTP host, port, "
             "and credentials on the Secrets page."
         )
+    # Detect a dead peer rather than waiting on it indefinitely.
+    transport = client.get_transport()
+    if transport is not None:
+        transport.set_keepalive(SFTP_KEEPALIVE)
     sftp = client.open_sftp()
+    # A stalled transfer now raises socket.timeout instead of hanging forever.
+    channel = sftp.get_channel()
+    if channel is not None:
+        channel.settimeout(stall_timeout)
     return client, sftp
 
 
