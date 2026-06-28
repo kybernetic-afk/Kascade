@@ -4,7 +4,14 @@ from types import SimpleNamespace
 
 import pytest
 
-from kascade.core import Updater, find_remote_file, subdir_from_match
+import kascade.core as core
+from kascade.core import (
+    SFTP_KEEPALIVE,
+    Updater,
+    connect_sftp,
+    find_remote_file,
+    subdir_from_match,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -161,6 +168,66 @@ def test_unmatched_config_lands_in_root_and_is_flagged(tmp_path):
 
     assert "/config/newmod.toml" in _remotes(sftp)
     assert updater.unplaced_config == ["newmod.toml"]
+
+
+# ---------------------------------------------------------------------------
+# connect_sftp keepalive + stall-timeout wiring
+# ---------------------------------------------------------------------------
+class _FakeTransport:
+    def __init__(self):
+        self.keepalive = None
+
+    def set_keepalive(self, interval):
+        self.keepalive = interval
+
+
+class _FakeChannel:
+    def __init__(self):
+        self.timeout = None
+
+    def settimeout(self, t):
+        self.timeout = t
+
+
+class _FakeSSHClient:
+    def __init__(self):
+        self.transport = _FakeTransport()
+        self.channel = _FakeChannel()
+        self.connect_kwargs = None
+
+    def load_host_keys(self, path):
+        pass
+
+    def set_missing_host_key_policy(self, policy):
+        pass
+
+    def connect(self, **kwargs):
+        self.connect_kwargs = kwargs
+
+    def get_transport(self):
+        return self.transport
+
+    def open_sftp(self):
+        return SimpleNamespace(get_channel=lambda: self.channel)
+
+
+def test_connect_sftp_sets_keepalive_and_stall_timeout(tmp_path, monkeypatch):
+    monkeypatch.setenv("APPDATA", str(tmp_path))
+    fake = _FakeSSHClient()
+    monkeypatch.setattr(core.paramiko, "SSHClient", lambda: fake)
+
+    secrets = {
+        "AMP_SFTP_HOST": "host", "AMP_SFTP_PORT": "2224",
+        "AMP_SFTP_USER": "u", "AMP_SFTP_PASS": "p",
+    }
+    client, sftp = connect_sftp(secrets, log=lambda *_a: None, stall_timeout=42)
+
+    assert client is fake
+    assert fake.transport.keepalive == SFTP_KEEPALIVE
+    assert fake.channel.timeout == 42
+    # The connect call still carries the handshake timeouts.
+    assert fake.connect_kwargs["timeout"] == 30
+    assert fake.connect_kwargs["auth_timeout"] == 30
 
 
 def test_existing_remote_match_is_replaced_in_place(tmp_path):
