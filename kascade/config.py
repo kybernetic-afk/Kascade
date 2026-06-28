@@ -136,14 +136,14 @@ class Config:
         return self.known_file_paths.get("config", {}).get(filename)
 
     def set_config_path(self, filename, subdir):
-        """Pin (or, with a blank subdir, unpin) the destination sub-path for a
-        config file. `subdir` is relative to the config/ folder; '' means root."""
+        """Pin a config file's destination sub-path (relative to config/). An
+        empty string pins it to the config root; pass subdir=None to remove the
+        pin entirely (revert to automatic name-matching)."""
         paths = self.known_file_paths.setdefault("config", {})
-        subdir = (subdir or "").strip().strip("/")
-        if subdir:
-            paths[filename] = subdir
-        else:
+        if subdir is None:
             paths.pop(filename, None)
+        else:
+            paths[filename] = subdir.strip().strip("/")
 
     def ensure_dirs(self):
         """Create the app's working folders if they don't exist. Best-effort."""
