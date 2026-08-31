@@ -1,4 +1,3 @@
-import ipaddress
 import os
 import socket
 import time
@@ -10,23 +9,11 @@ from urllib.parse import urlparse
 import paramiko
 import requests
 
+from . import amp_api
+from .netutil import is_local_host
 from .paths import config_dir
 
 WEBHOOK_DOCS_URL = "https://discourse.cubecoders.com/t/webhook-and-stream-deck-integrations/34321"
-
-
-def _is_local_host(host: str) -> bool:
-    """True for loopback / private / link-local addresses (and 'localhost').
-
-    Used to permit plain http only for AMP instances on the same machine/LAN.
-    """
-    if host.lower() == "localhost":
-        return True
-    try:
-        ip = ipaddress.ip_address(host)
-    except ValueError:
-        return False
-    return ip.is_loopback or ip.is_private or ip.is_link_local
 
 
 def find_remote_file(sftp, search_dir, filename, log=None, depth=0):
@@ -177,6 +164,7 @@ PHASES = [
     ("upload", "Uploading server files"),
     ("post_update", "Applying post-update files"),
     ("cleanup", "Cleaning up"),
+    ("sync_version", "Syncing NeoForge version"),
     ("start", "Starting server"),
 ]
 
@@ -392,7 +380,7 @@ class Updater:
             )
         # The AMP token rides in this request (Bearer header + body). Refuse to
         # send it over plain http to anything beyond the local machine/LAN.
-        if scheme == "http" and not _is_local_host(parsed.hostname or ""):
+        if scheme == "http" and not is_local_host(parsed.hostname or ""):
             raise UpdateError(
                 f"The AMP webhook URL uses http://, which would send your AMP token in "
                 f"cleartext to {parsed.hostname}. Use an https:// URL (plain http is only "
@@ -437,6 +425,59 @@ class Updater:
         if fatal:
             raise UpdateError(message + " Check your webhook configuration.", WEBHOOK_DOCS_URL)
         self.log(message)
+
+    # ------------------------------------------------------------------
+    # AMP application config (NeoForge version)
+    # ------------------------------------------------------------------
+    def _sync_neoforge_version(self, installer_name):
+        """Make sure AMP is configured to run the NeoForge version we just
+        uploaded, and have AMP actually download/install it, before Start is
+        called. Without this, AMP starts up against whatever version it was
+        last configured for - not the installer we just placed on disk - and
+        fails silently."""
+        version = amp_api.parse_neoforge_version(installer_name)
+        if not version:
+            raise UpdateError(
+                f"Could not read a NeoForge version out of '{installer_name}'."
+            )
+        if not self.cfg.amp_instance_id:
+            raise UpdateError(
+                "No AMP instance ID is set. Add it on the Settings page so Kascade can "
+                "sync the NeoForge version with AMP before starting the server."
+            )
+
+        webhook_url = self.s["AMP_WEBHOOK_URL"]
+        if not webhook_url:
+            raise UpdateError(
+                "No AMP webhook URL is set. Add it on the Secrets page.", WEBHOOK_DOCS_URL
+            )
+
+        self.log(f"Signing in to AMP to sync the NeoForge version to {version}...")
+        try:
+            base_url = amp_api.base_url_from_webhook_url(webhook_url)
+            api = amp_api.AMPInstanceAPI(base_url, self.cfg.amp_instance_id, log=self.log)
+            api.login(self.s["AMP_API_USER"], self.s["AMP_API_PASS"])
+
+            node = amp_api.NEOFORGE_VERSION_NODE
+            current = api.get_config(node)
+            enum_values = (current or {}).get("EnumValues") or {}
+            if enum_values and version not in enum_values:
+                raise UpdateError(
+                    f"AMP doesn't list NeoForge version {version} as available yet. "
+                    "Try again shortly, or check the version in AMP's UI."
+                )
+
+            if (current or {}).get("CurrentValue") == version:
+                self.log("AMP's NeoForge Version already matches; skipping download.")
+                return
+
+            api.set_config(node, version)
+            self.log(f"Set AMP's NeoForge Version to {version}. Triggering download...")
+            api.update_application()
+            api.wait_for_update(is_cancelled=self._is_cancelled)
+            self.log("AMP finished downloading and installing NeoForge.")
+        except amp_api.AMPAPIError as e:
+            raise UpdateError(str(e))
 
     # ------------------------------------------------------------------
     # main
@@ -555,6 +596,9 @@ class Updater:
                 self.log(f"Deleted zip: {latest_zip}")
         except Exception as e:
             self.log(f"Warning: failed to delete zip {latest_zip}: {e}")
+
+        self._phase("sync_version")
+        self._sync_neoforge_version(installer_name)
 
         self._phase("start")
         self.log("Starting server...")

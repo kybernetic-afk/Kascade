@@ -22,6 +22,8 @@ SECRET_ROLES = [
     ("AMP_SFTP_PASS", "SFTP password", True, True),
     ("AMP_TOKEN", "AMP API token", True, True),
     ("AMP_WEBHOOK_URL", "AMP webhook URL", True, False),
+    ("AMP_API_USER", "AMP API username", True, False),
+    ("AMP_API_PASS", "AMP API password", True, True),
 ]
 
 _NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0

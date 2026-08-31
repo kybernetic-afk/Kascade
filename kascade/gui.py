@@ -48,7 +48,9 @@ from PySide6.QtWidgets import (
 )
 
 from . import __version__
+from . import amp_api
 from . import backup as content_backup
+from .amp_api import AMPAPIError
 from .config import Config
 from .core import (
     Updater,
@@ -463,6 +465,64 @@ class RemoteSearchWorker(QObject):
             self.finished.emit(False, str(e))
         except Exception as e:
             self.finished.emit(False, str(e))
+
+
+class PermissionCheckWorker(QObject):
+    """Logs into AMP as the configured API user and checks whether it can
+    actually read/change the NeoForge version and trigger an update, without
+    making any real change. Emits finished(True, list[PermissionCheck]) on a
+    successful login, or finished(False, error_str) if it couldn't even log in."""
+
+    finished = Signal(bool, object)
+
+    def __init__(self, config, instance_id):
+        super().__init__()
+        self.config = config
+        self.instance_id = instance_id
+
+    def run(self):
+        try:
+            if not self.instance_id:
+                raise AMPAPIError("No AMP instance ID is set on the Settings page.")
+            secrets = resolve_secrets(self.config.secrets, self.config.bws_project_id)
+            base_url = amp_api.base_url_from_webhook_url(secrets["AMP_WEBHOOK_URL"])
+            api = amp_api.AMPInstanceAPI(base_url, self.instance_id)
+            api.login(secrets["AMP_API_USER"], secrets["AMP_API_PASS"])
+            self.finished.emit(True, api.check_permissions())
+        except (AMPAPIError, SecretError) as e:
+            self.finished.emit(False, str(e))
+        except Exception as e:
+            self.finished.emit(False, str(e))
+
+
+class PermissionCheckDialog(QDialog):
+    """Shows the pass/fail result of each permission check as a list of
+    PhaseRow-style rows, with the detail/error text underneath each one."""
+
+    def __init__(self, parent, checks):
+        super().__init__(parent)
+        self.setWindowTitle("AMP permission check")
+        self.setMinimumWidth(440)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(22, 20, 22, 18)
+        layout.setSpacing(10)
+
+        card = Card()
+        for check in checks:
+            row = PhaseRow(check.label)
+            row.set_state("done" if check.ok else "failed")
+            card.add(row)
+            if check.detail:
+                detail = QLabel(check.detail)
+                detail.setObjectName("SubHeader")
+                detail.setWordWrap(True)
+                detail.setContentsMargins(30, 0, 0, 8)
+                card.add(detail)
+        layout.addWidget(card)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok)
+        buttons.accepted.connect(self.accept)
+        layout.addWidget(buttons)
 
 
 def ensure_bws_token(parent) -> bool:
@@ -1068,6 +1128,31 @@ class SettingsPage(QWidget):
         cf.add_layout(cform)
         layout.addWidget(cf)
 
+        # AMP NeoForge version sync
+        nf = Card("AMP NeoForge version sync")
+        nfform = QFormLayout()
+        nfform.setSpacing(10)
+        self.amp_instance_id = QLineEdit(config.amp_instance_id)
+        self.amp_instance_id.setPlaceholderText("e.g. a1b2c3d4-e5f6-7890-abcd-ef1234567890")
+        nfform.addRow("AMP instance ID:", self.amp_instance_id)
+        nf.add_layout(nfform)
+        nf_hint = QLabel(
+            "Found in the AMP URL when viewing this instance (amp.example.com/instances/"
+            "<id>/...). Used, together with the AMP API username/password on the Secrets "
+            "page, to set AMP's NeoForge Version and trigger its download before the "
+            "server starts."
+        )
+        nf_hint.setObjectName("SubHeader")
+        nf_hint.setWordWrap(True)
+        nf.add(nf_hint)
+        check_row = QHBoxLayout()
+        check_row.addStretch(1)
+        self.check_perms_btn = QPushButton("Check permissions")
+        self.check_perms_btn.clicked.connect(self.check_amp_permissions)
+        check_row.addWidget(self.check_perms_btn)
+        nf.add_layout(check_row)
+        layout.addWidget(nf)
+
         # Timing & retries
         timing = Card("Timing & retries")
         tform = QFormLayout()
@@ -1139,6 +1224,47 @@ class SettingsPage(QWidget):
         save_row.addWidget(self.save_btn)
         outer.addLayout(save_row)
 
+    def check_amp_permissions(self):
+        instance_id = self.amp_instance_id.text().strip()
+        if not instance_id:
+            QMessageBox.information(
+                self, "Check permissions", "Enter an AMP instance ID first."
+            )
+            return
+        if config_needs_bws(self.config.secrets) and not ensure_bws_token(self):
+            return
+
+        self._perm_result = None
+        self._perm_busy = BusyDialog(self, "Signing in to AMP and checking permissions...")
+        self._perm_thread = QThread()
+        self._perm_worker = PermissionCheckWorker(self.config, instance_id)
+        self._perm_worker.moveToThread(self._perm_thread)
+        self._perm_thread.started.connect(self._perm_worker.run)
+        self._perm_worker.finished.connect(self._on_perm_check_done)
+        self._perm_worker.finished.connect(self._perm_thread.quit)
+        self._perm_thread.finished.connect(self._perm_thread.deleteLater)
+        self._perm_thread.start()
+        self._perm_busy.exec()  # modal; closed by _on_perm_check_done via finish()
+        self._handle_perm_result()
+
+    def _on_perm_check_done(self, success, payload):
+        self._perm_result = (success, payload)
+        self._perm_worker = None
+        if self._perm_busy is not None:
+            self._perm_busy.finish()
+
+    def _handle_perm_result(self):
+        result = self._perm_result
+        self._perm_result = None
+        self._perm_busy = None
+        if result is None:
+            return  # dialog closed without a result
+        success, payload = result
+        if not success:
+            show_error_dialog(self, "Check permissions", str(payload))
+            return
+        PermissionCheckDialog(self, payload).exec()
+
     def _browse_row(self, line_edit):
         row = QHBoxLayout()
         row.setContentsMargins(0, 0, 0, 0)
@@ -1167,6 +1293,7 @@ class SettingsPage(QWidget):
             QMessageBox.warning(self, "Invalid value", "CurseForge Project ID must be a number.")
             return False
         self.config.server_pack_match = self.server_pack_match.text().strip() or "ServerFiles"
+        self.config.amp_instance_id = self.amp_instance_id.text().strip()
         self.config.stop_delay = self.stop_delay.value()
         self.config.upload_retries = self.upload_retries.value()
         self.config.targets = [

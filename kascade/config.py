@@ -75,7 +75,8 @@ def _default_known_file_paths():
 def _default_secrets():
     # Default: pull each value from Bitwarden using the same key name.
     keys = ["AMP_SFTP_HOST", "AMP_SFTP_PORT", "AMP_SFTP_USER",
-            "AMP_SFTP_PASS", "AMP_TOKEN", "AMP_WEBHOOK_URL"]
+            "AMP_SFTP_PASS", "AMP_TOKEN", "AMP_WEBHOOK_URL",
+            "AMP_API_USER", "AMP_API_PASS"]
     return {k: {"mode": "bws", "value": "", "bws_key": k} for k in keys}
 
 
@@ -115,6 +116,7 @@ class Config:
     bws_project_id: str = ""
     curseforge_project_id: int = 925200
     server_pack_match: str = "ServerFiles"
+    amp_instance_id: str = ""
     secrets: dict = field(default_factory=_default_secrets)
 
     def __post_init__(self):
