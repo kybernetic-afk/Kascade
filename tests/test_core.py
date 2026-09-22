@@ -308,7 +308,10 @@ def test_sync_neoforge_version_sets_config_and_triggers_update(monkeypatch):
     assert ("wait_for_update",) in api.calls
 
 
-def test_sync_neoforge_version_skips_update_when_already_current(monkeypatch):
+def test_sync_neoforge_version_still_triggers_update_when_already_current(monkeypatch):
+    # A matching config value doesn't guarantee the installer actually ran
+    # (e.g. someone set the dropdown by hand in AMP's UI), so Download/Update
+    # must still be triggered even when the version already matches.
     class _AlreadyCurrent(_FakeAMPInstanceAPI):
         current_value = "21.1.249"
 
@@ -319,7 +322,38 @@ def test_sync_neoforge_version_skips_update_when_already_current(monkeypatch):
 
     api = captured["api"]
     assert not any(call[0] == "set_config" for call in api.calls)
-    assert not any(call[0] == "update_application" for call in api.calls)
+    assert any(call[0] == "update_application" for call in api.calls)
+
+
+def test_sync_neoforge_version_retries_until_amp_lists_it(monkeypatch):
+    # AMP's list of available versions can lag right after a release. Confirm
+    # the sync waits it out rather than failing on the first miss.
+    class _EventuallyListed(_FakeAMPInstanceAPI):
+        current_value = "21.1.247"
+        calls_before_listed = 2
+
+        def __init__(self, *a, **kw):
+            super().__init__(*a, **kw)
+            self._get_config_calls = 0
+
+        def get_config(self, node):
+            self._get_config_calls += 1
+            self.calls.append(("get_config", node))
+            enum_values = {"21.1.247": "21.1.247"}
+            if self._get_config_calls > self.calls_before_listed:
+                enum_values["21.1.249"] = "21.1.249"
+            return {"CurrentValue": self.current_value, "EnumValues": enum_values}
+
+    monkeypatch.setattr(core.time, "sleep", lambda _s: None)
+
+    cfg = _cfg(amp_instance_id="a1b2c3d4-e5f6-7890-abcd-ef1234567890")
+    updater, captured = _updater_with_amp(cfg, monkeypatch, fake_api_cls=_EventuallyListed)
+
+    updater._sync_neoforge_version("neoforge-21.1.249-installer.jar")
+
+    api = captured["api"]
+    assert any(call == ("set_config", core.amp_api.NEOFORGE_VERSION_NODE, "21.1.249") for call in api.calls)
+    assert any(call[0] == "update_application" for call in api.calls)
 
 
 def test_sync_neoforge_version_requires_instance_id(monkeypatch):
@@ -339,6 +373,12 @@ def test_sync_neoforge_version_requires_parseable_installer_name(monkeypatch):
 
 
 def test_sync_neoforge_version_rejects_unlisted_version(monkeypatch):
+    # The real check retries for up to 60s in case AMP's version list just
+    # hasn't caught up yet. Fake the clock so the deadline is already past
+    # by the first poll, instead of the test actually waiting a minute.
+    times = iter([1000.0, 1100.0])
+    monkeypatch.setattr(core.time, "time", lambda: next(times, 1100.0))
+
     cfg = _cfg(amp_instance_id="a1b2c3d4-e5f6-7890-abcd-ef1234567890")
     updater, _captured = _updater_with_amp(cfg, monkeypatch)
 

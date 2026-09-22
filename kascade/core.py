@@ -462,17 +462,39 @@ class Updater:
             current = api.get_config(node)
             enum_values = (current or {}).get("EnumValues") or {}
             if enum_values and version not in enum_values:
-                raise UpdateError(
-                    f"AMP doesn't list NeoForge version {version} as available yet. "
-                    "Try again shortly, or check the version in AMP's UI."
+                # AMP fetches its list of available NeoForge versions from
+                # upstream on its own schedule, so a version can lag behind
+                # for a bit right after release. Poll for a while before
+                # giving up, instead of failing the whole update on the
+                # first miss.
+                self.log(
+                    f"AMP doesn't list NeoForge version {version} yet; "
+                    "waiting for AMP to pick it up..."
                 )
+                deadline = time.time() + 60
+                while version not in enum_values:
+                    if time.time() >= deadline:
+                        raise UpdateError(
+                            f"AMP doesn't list NeoForge version {version} as available yet. "
+                            "Try again shortly, or check the version in AMP's UI."
+                        )
+                    self._sleep(5)
+                    current = api.get_config(node)
+                    enum_values = (current or {}).get("EnumValues") or {}
+                self.log(f"AMP now lists NeoForge version {version}.")
 
             if (current or {}).get("CurrentValue") == version:
-                self.log("AMP's NeoForge Version already matches; skipping download.")
-                return
+                self.log("AMP's NeoForge Version already matches.")
+            else:
+                api.set_config(node, version)
+                self.log(f"Set AMP's NeoForge Version to {version}.")
 
-            api.set_config(node, version)
-            self.log(f"Set AMP's NeoForge Version to {version}. Triggering download...")
+            # Always trigger Download/Update, even if the config value already
+            # matched: the value can be set (e.g. by hand in AMP's UI) without
+            # the installer having actually run, which leaves the version
+            # "configured" but not installed and the server fails to start.
+            # AMP no-ops this quickly when the files are already present.
+            self.log("Triggering download...")
             api.update_application()
             api.wait_for_update(is_cancelled=self._is_cancelled)
             self.log("AMP finished downloading and installing NeoForge.")
